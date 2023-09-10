@@ -1,0 +1,53 @@
+---
+title: "SMLP_Iliopoulos"
+author: "Ioannis Iliopoulos"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## EEG dataset
+
+The following dataset includes pre-processed EEG data from a total of 105 participants who took part in a semantic violation experiment. 
+The dependent variable is to be found under the variable named "value". The values there are already aggregated for the time window 350-600 ms after stimulus onset.
+The rest of the variables include:
+"subject": Participant Number
+"item_n": Item Number 
+"Condition": Two Conditions: 1 (semantically plausible) and 9 (semantically implausible)
+"Animacy": This was an extra manipulation that I still haven't looked at. We checked verb-noun combinations and this variable refers to the animacy status of the noun. 
+"variable": This variable includes the name of the EEG-channels. Depending on the analysis, I always keep only a subset of it. 
+
+```{r cars}
+data<-read.csv("sem_de_350_600.csv")
+summary(data)
+```
+
+## Analysis
+
+For this analysis I just keep the Channels where the N400 is expected ("Cz","CPz","CP1","CP2","Pz"). I use the condition 1 (semantically plausible) as baseline condition, not using any contrast coding. 
+
+```{r pressure}
+library(lme4)
+library(tidyverse)
+
+individual_analysis_channels<-c("Cz","CPz","CP1","CP2","Pz")
+sem_de_individual <- droplevels(subset(data, variable %in% individual_analysis_channels))
+sem_N400_data<-aggregate(value~condition+subject+item_n,data=data, FUN = mean)
+sem_N400_data$condition<-as.factor(sem_N400_data$condition)
+
+m1 <- lmer(value ~ condition + (1+condition|subject)+(1|item_n), data = sem_N400_data)
+summary(m1)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+## Open Issues
+
+1. I am interested in individual variability and more specifically within-person variability. For that I have tested the same individuals in 2 different EEG experiments in their first and their second language. Concretely, I am aiming to find differences in the L1 and the L2 concerning N400 and P600. For that I usually extract the slopes by participant and compare them (using correlation tests) with the slopes from the other experiments. What can I do when adding the random slopes gives me a boundary warning? Is there a better way to check for this? \
+
+2. (1+condition|subject) VS (1+condition||subject). Why when extracting the random slopes I get an extra column when the intercept and slope by participant are uncorrelated? How do I solve this? \
+
+
