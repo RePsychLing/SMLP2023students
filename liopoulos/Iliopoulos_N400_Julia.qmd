@@ -1,0 +1,158 @@
+---
+title: "Ioannis Iliopoulos: N400"
+subtitle: "RePsychLing in SMLP2023"
+author: "Reinhold Kliegl"
+date: "2023-09-09"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    code-fold: false
+    number-sections: true
+    fig-width: 8
+    fig-height: 6
+editor_options:
+  chunk_output_type: console
+jupyter: julia-1.9
+---
+
+# Description
+
+
+# Setup
+
+## Packages
+
+```{julia}
+#| label: packages
+
+using Arrow
+using CairoMakie
+using DataFrames
+using MixedModels
+using MixedModelsMakie
+using RCall
+using RegressionFormulae
+
+CairoMakie.activate!(; type="svg");
+```
+
+## Code book
+
++ `Subj`, `Item`: Grouping variables (random factors)
++ `Cat`, `Resp`:  within-Subj and within-Item fixed factors 
++ `Type`:  within-Subj and between-Item factor
+  
+```{julia}
+#| label: data
+
+dat = DataFrame(Arrow.Table("data/Iliopoulos_N400.arrow"));
+describe(dat)
+levels(dat.Cond)
+```
+
+# Contrasts
+
+We have  the random factors `Subj` and `Item` and declare them as a grouping variables.
+
+```{julia}
+contrasts = merge(
+     Dict(i => Grouping() for i in (:Subj, :Item)),
+     Dict(:Cond => DummyCoding())
+     )
+```
+
+Grouping variables are automatically detected by the program. So this line is not really needed, but good to know.
+
+# Model selection
+
+## Only varying intercept LMM
+
+A quick way to check highest order interactions. 
+```{julia}
+#| label: m_ovi
+
+m_ovi = let
+    form = @formula(value ~ 1 + Cond + (1 | Subj) + (1 | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+## Complex LMM
+
+```{julia}
+#| label: m_cpx
+
+m_cpx = let
+    form = @formula(value ~ 1 + Cond + (1 + Cond | Subj) + (1 + Cond | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+issingular(m_cpx) # not ok, overparameterized
+VarCorr(m_cpx)
+```
+
+This model is overparameterized.
+
+## Zero-correlation parameter LMM
+
+```{julia}
+#| label: m_zcp
+
+m_zcp = let
+    form = @formula(value ~ 1 + Cond + zerocorr(1 + Cond | Subj) + zerocorr(1 + Cond | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+issingular(m_zcp) # not ok, overparameterized
+VarCorr(m_zcp)
+```
+
+LMM `m_zcp` is not ok. No VC for item-related condition effect.
+
+## Parsimonious LMM
+
+We remove the item-related VC for `Cond` estimated at zero. 
+
+```{julia}
+#| label: m_prm
+
+m_prm = let
+    form = @formula(value ~ 1 + Cond + zerocorr(1 + Cond | Subj) + (1 | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+issingular(m_prm) # not ok, overparameterized
+VarCorr(m_prm)
+```
+
+This LMM checks out ok.
+
+## Model comparisons
+
+```{julia}
+#| label: LRT
+
+MixedModels.likelihoodratiotest(m_ovi, m_prm, m_zcp, m_cpx)
+```
+
+```{julia}
+#| label: AIC_BIC
+
+let mods = [m_ovi,m_prm,  m_zcp, m_cpx];
+ DataFrame(;
+    model=[:m_ovi, :m_prm, :m_zcp, :m_cpx],
+    pars=dof.(mods),
+    geomdof=round.(Int, (sum ∘ leverage).(mods)),
+    AIC=round.(Int, aic.(mods)),
+    AICc=round.(Int, aicc.(mods)),
+    BIC=round.(Int, bic.(mods)),
+  )
+end
+```
+
+... but subject- and item-related VCs for  condition effect do not contribute to goodness of fit. 
+LRT, AIC and BIC select `m_ovi`
+
+# Appendix
+```{julia}
+versioninfo()
+```

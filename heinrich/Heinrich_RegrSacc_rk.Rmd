@@ -1,0 +1,208 @@
+---
+title: "Linear mixed modeling for the SMLP"
+author: "Nils Wendel Heinrich"
+date: '2023-08-10'
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE}
+library(arrow)
+library(tidyverse)
+library(lme4)
+library(lmerTest)  # I may have to report p values for paper submission
+library(sjPlot)
+library(ggplot2)
+library(fitdistrplus)
+library(simr)
+library(summarytools)
+```
+
+# Data
+Every row within the data set holds the saccade amplitude of a saccade executed while playing a video game. The objective of the game is to avoid crashing into oncoming obstacles while steering left or right (or staying in the same horizontal position). Drift tiles alter the flight path of the agent externally pushing the agent in a specific direction and input noise makes steering inaccurate. Each row holds the information how many obstacles as well as how many drift tiles were on screen and what input noise was present during the trial. *See videos in repository for exemplary game trial (exemplary_trial.mov) and a slowed down visualization of gaze tracking while playing (animation_crashed.mp4).*
+
+It may be the case that the eye tracker flagged rows as saccades where there was no eye travel or NAs prevented me from calculating an amplitude for the saccade. Therefore I will filter out saccades that have no saccade amplitude.
+
+```{r data, include=FALSE}
+
+data_saccades <- read_csv("data/saccades_data_sampled_for_smlp2023.csv")
+data_saccades <- data_saccades[!is.na(data_saccades$saccade_amplitude), ]
+
+```
+
+I will rearrange the order of the levels in the factor *input noise*. Alphabetically, *S*trong would come before *W*eak. It's more beautiful this way within the output of the linear models. Also, I may be compulsively orderly.
+
+```{r factorizing, include=TRUE}
+
+data_saccades$input_noise <- factor(data_saccades$input_noise, levels = c("N", "W", "S"))
+# None vs. Weak vs. Strong
+
+```
+
+## Effects coding
+My biggest concern right now is effects coding. I will simply use contrast coding and initiate my own matrix here so as it takes the grand mean as the intercept, and then each level of a factor is changed to be compared to a reference level (with *S*trong being the reference level in this example). I would love to go deeper in effects coding during the summer school as this might actually be really relevant for my data analysis. Especially in terms of defining my own contrasts and how to motivate them.
+
+```{r contrast_coding, include=TRUE}
+
+my.coding <- matrix(rep(1/3, 6), ncol=2)
+my.simple <- contrasts(data_saccades$input_noise) - my.coding
+
+# assigning contrasts
+contrasts(data_saccades$input_noise) = my.simple
+
+```
+
+## Splitting data
+Saccades can serve different functions. They might move progressively down on the screen, actively exploring the visual -**progressive saccades**-  or the eyes might jump back up on the screen to move to a more stationary position in near vicinity of the agent -**regressive saccades**-. I will split the data based on where the saccades are directed (saccade_direction_y referring to the vertical direction of the saccade). I will stick to regressive saccades from now on because the resulting models would be rather repetitive when building models for both sets.
+
+```{r splitting_data, include=TRUE}
+
+progressive_saccades <- data_saccades[data_saccades$saccade_direction_y < 0, ]
+regressive_saccades <- data_saccades[data_saccades$saccade_direction_y > 0, ]
+
+```
+
+# Rationale for random effects
+Subject (ID) will be explored as a random effect. To motivate including ID as random intercept effect, I build a null model predicting the variable of interest (in this case saccade amplitude) only including ID as random intercept effect.
+
+```{r random_effects, include=TRUE}
+
+null_saccAmp_regressive <- lmer(saccade_amplitude ~ 1 + (1|ID), data=regressive_saccades, REML=FALSE)
+summary(null_saccAmp_regressive)
+
+```
+
+Inter-correlation coefficient (ICC):
+
+```{r ICCs, include=TRUE}
+
+ICC_saccAmp_regress <- 2.155 / (2.155 + 62.244)
+cat(sprintf("ICC saccade amplitude in regressive saccades: %s\n", ICC_saccAmp_regress))
+
+```
+
+The ICC describes the total amount of variance explained within saccade amplitude solely by subject. Random slope effects are explored when building the individual models while referring to the AIC for model selection. I've never seen another information criterion used in articles. I would be interested however to maybe go through cases of when to use the BIC for example.
+
+# Checking distribution of saccade amplitude
+We will assume a gamma distribution for saccade amplitude. A large amount of saccades will have amplitudes with low visual degrees, with larger amplitudes shown by less and less saccades. Saccade amplitude can never be negative...
+
+Looking into regressive saccades...
+
+```{r check_saccamp_progress, include=TRUE}
+
+fit.gamma_regress <- fitdist(regressive_saccades$saccade_amplitude, distr = "gamma", method = "mme")
+summary(fit.gamma_regress)
+plot(fit.gamma_regress)
+
+hist(regressive_saccades$saccade_amplitude, breaks=200)
+```
+
+RK: There are records with missing cases for `N_visible_drift_tiles` and `4	N_visible_obstacles`. I remove them to have dataframe with complete data. This leaves us with 3760, instead of 3771 observations. I also change a few standard variable names to comply with my own style.
+
+```{r}
+#stview(dfSummary(regressive_saccades))
+
+dat <- 
+  regressive_saccades |> 
+  filter(!is.na(N_visible_drift_tiles)) |> 
+  rename(Subj = ID, IN = input_noise, nvdt = N_visible_drift_tiles, nvo = N_visible_obstacles, 
+         sa = saccade_amplitude) |> 
+  dplyr::select(Subj, IN, nvdt, nvo, sa)
+dat
+
+
+nrow(regressive_saccades)
+```
+
+# Generalized Linear mixed modeling
+
+```{r saccamp_regress, include=TRUE}
+m_ovi <- glmer(sa ~ 1 + nvo + nvdt + IN + (1|Subj), data = dat, family = Gamma)
+print(summary(m_ovi), cor=FALSE)
+```
+
+Let's say I assume that the effect of **input noise** on saccade amplitude is different from one subject to another. Therefore I will fit another model defining input noise as *random slope* effect on ID. 
+
+```{r saccamp_regress2, include=TRUE}
+m_cpx <- glmer(sa ~ 1 + nvo + nvdt + IN + (1 + IN |Subj), data = dat, family = Gamma)
+summary(rePCA(m_cpx))
+VarCorr(m_cpx) 
+```
+
+**boundary (singular) fit: see help('isSingular')** tells us already that the random effect seems to be very small. I will nevertheless continue with testing the models against each other.
+
+
+RK: I don't think this is a good idea, also not necessary, as shown below. Perhaps the CP between the two input-noise contrasts is the source of the problem. We check the zero-correlation parameter GLMM. For this we need to work with indicator variables for the `input_noise` contrasts. 
+
+```{r saccamp_regress3, include=TRUE}
+mm <- model.matrix( ~ 1 + nvo + nvdt + IN,  data = dat)
+dat$inw <- mm[, 4]
+dat$ins <- mm[, 5]
+
+# check equivalence
+m_ovi_v2 <- glmer(sa ~ 1 + nvo + nvdt + inw + ins + (1|Subj), data = dat, family = Gamma)
+print(summary(m_ovi_v2), cor=FALSE)
+anova(m_ovi, m_ovi_v2)
+
+m_zcp <- glmer(sa ~ 1 + nvo + nvdt + inw + ins + (1 + inw + ins || Subj), data = dat, family = Gamma)
+summary(rePCA(m_zcp))
+VarCorr(m_zcp) 
+```
+
+RK: Looks like VC for the first input-noise contrast has no reliable variance associated with it. Let's take it out.
+
+```{r saccamp_regress4, include=TRUE}
+m_prm1 <- glmer(sa ~ 1 + nvo + nvdt + IN + (1 + ins || Subj), data = dat, family = Gamma)
+summary(rePCA(m_prm1))
+VarCorr(m_prm1 )
+
+anova(m_ovi, m_prm1, m_zcp, m_cpx)
+```
+
+RK: We could select `m_prm1`, but we can add the CP between GM and second input-noise contrast.
+
+```{r saccamp_regress5, include=TRUE}
+m_prm2 <- glmer(sa ~ 1 + nvo + nvdt + inw + ins + (1 + ins | Subj), data = dat, family = Gamma)
+VarCorr(m_prm2)
+summary(rePCA(m_prm2))
+
+anova(m_prm1, m_prm2)
+```
+
+CP is not supported by the data. We stay with  `m_prm1`.
+
+NH: Based on AIC model saccamp_regress.fit2 is selected (though referring to BIC, model saccamp_regress.fit would have been selected due to higher penalization for increased number of parameters in fit2).
+
+RK: Basically, I use AIC when I test theoretically relevant parameters and switch to BIC when I am in an exploratory mode and want to avoid overfitting. In your case all criteria support the selection of  `saccamp_regress.fit2`.  Only now do we look at fixed effects.
+
+```{r}
+print(summary(m_prm1), cor=FALSE)
+print(summary(m_ovi), cor=FALSE)
+```
+
+Further options:
+
+1. Try different contrast setting. 
+2. Check `inw` and `ins` for individual differences in linear trends of the two continuous covariates. (I assume they are repeated within-subject covariates.) 
+
+# Power analysis 
+
+RK: Skipped here, but can be a topic at SMLP2023. 
+
+Based on **Green, Peter, and Catriona J MacLeod. 2016. “SIMR: An R Package for Power Analysis of Generalized Linear Mixed Models by Simulation.” Methods in Ecology and Evolution 7 (4): 493–98**.
+
+```{r power_analysis, eval=FALSE}
+powerSim(m_prm1, c("N_visible_obstacles", "N_visible_drift_tiles", "input_noise"), nsim = 1000)
+```
+
+# File for input in Julia
+
+```{r}
+write_feather(dat, "data/Heinrich_RegressiveSaccades.arrow")
+```
+

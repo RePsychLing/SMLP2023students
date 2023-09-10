@@ -1,0 +1,113 @@
+---
+title: "Gianna Urbanczik: YoungOld" 
+subtitle: "RePsychLing in SMLP2023"
+author: "Reinhold Kliegl"
+date: "2023-09-09"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    code-fold: false
+    number-sections: true
+    fig-width: 8
+    fig-height: 6
+editor_options:
+  chunk_output_type: console
+jupyter: julia-1.9
+---
+
+# Description
+
+# Setup
+
+## Packages
+
+```{julia}
+#| label: packages
+#| 
+using Arrow
+using CairoMakie
+using DataFrames
+using MixedModels
+using RCall
+using RegressionFormulae
+```
+
+
+```{julia}
+#| label: data
+
+dat = DataFrame(Arrow.Table("data/Urbanczik_YoungOld.arrow"));
+describe(dat)
+```
+
+# Contrasts
+
+We have  the random factors `Subj` and `Item` and declare them as a grouping variables.
+
+```{julia}
+contrasts = merge(
+     Dict(i => Grouping() for i in (:Subj, :Item)),
+     Dict(:Group => EffectsCoding())
+     )
+```
+
+Grouping variables are automatically detected by the program. So this line is not really needed, but good to know.
+
+## Only varying intercept LMM
+
+A quick way to check highest order interactions. 
+```{julia}
+#| label: m_ovi
+#| 
+m_ovi = let
+    form = @formula(log(rt) ~ 1 + Group + (1 | Subj) + (1 | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+issingular(m_ovi)
+VarCorr(m_ovi)
+```
+
+Looks good.
+
+## Zero-correlation parameter LMM
+
+A quick way to check highest order interactions. 
+```{julia}
+#| label: m_zcp
+#| 
+m_zcp = let
+    form = @formula(log(rt) ~ 1 + Group + (1 | Subj) + zerocorr(1 + Group | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+issingular(m_zcp)
+VarCorr(m_zcp)
+```
+
+There is no evidence for a reliable between-Item VC. We select LMM `m_ovi`.
+
+
+# Diagnostic plots of LMM residuals
+
+Do model residuals meet LMM assumptions? Classic plots are
+
+  - Residual over fitted
+  - Quantiles of model residuals over theoretical quantiles of normal distribution
+
+## Residual-over-fitted plot
+
+The slant in residuals show a lower and upper boundary of reaction times, that is we have have too few short and too few long residuals. Not ideal, but at least width of the residual band looks similar across the fitted values, that is there is no evidence for heteroskedasticity.
+
+```{julia}
+#| code-fold: true
+#| label: fig-m1fittedresid
+#| fig-cap: Residuals versus fitted values for model m1
+scatter(fitted(m_ovi), residuals(m_ovi); alpha=0.3)
+```
+
+
+# Appendix
+```{julia}
+versioninfo()
+```

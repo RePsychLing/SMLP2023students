@@ -1,0 +1,139 @@
+---
+title: "SMLP_Iliopoulos"
+author: "Ioannis Iliopoulos"
+date: "2023-09-09"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Revision
+
+RK comments added.
+
+## EEG dataset
+
+The following dataset includes pre-processed EEG data from a total of 105 participants who took part in a semantic violation experiment. 
+The dependent variable is to be found under the variable named "value". The values there are already aggregated for the time window 350-600 ms after stimulus onset.
+The rest of the variables include:
+"subject": Participant Number
+"item_n": Item Number 
+"Condition": Two Conditions: 1 (semantically plausible) and 9 (semantically implausible)
+"Animacy": This was an extra manipulation that I still haven't looked at. We checked verb-noun combinations and this variable refers to the animacy status of the noun. 
+"variable": This variable includes the name of the EEG-channels. Depending on the analysis, I always keep only a subset of it. 
+
+```{r cars}
+data<-read.csv("data/sem_de_350_600.csv")
+summary(data)
+```
+
+## Analysis
+
+For this analysis I just keep the Channels where the N400 is expected ("Cz","CPz","CP1","CP2","Pz"). I use the condition 1 (semantically plausible) as baseline condition, not using any contrast coding. 
+
+```{r pressure}
+library(lme4)
+library(tidyverse)
+
+individual_analysis_channels<-c("Cz","CPz","CP1","CP2","Pz")
+sem_de_individual <- droplevels(subset(data, variable %in% individual_analysis_channels))
+sem_N400_data<-aggregate(value~condition+subject+item_n,data=data, FUN = mean)
+sem_N400_data$condition<-as.factor(sem_N400_data$condition)
+
+m1 <- lmer(value ~ condition + (1+condition|subject)+(1|item_n), data = sem_N400_data)
+isSingular(m1)     # ok
+summary(rePCA(m1)) # ok
+VarCorr(m1)
+
+# RK -- we usuallly use REML=FALSE; also control=lmerControl(calc.derivs=FALSE)
+m1a <- lmer(value ~ condition + (1+condition|subject)+(1|item_n), data = sem_N400_data, REML=FALSE)
+isSingular(m1a)     # not ok
+summary(rePCA(m1a)) # not ok
+VarCorr(m1a)
+```
+
+RK comment:
+
+1. There is a problems with your data representation: `subject` and `item_n` need to be factors. 
+
+2. `condition` is both within-subject and within-item. So you may also want check for corresponding item-related VCs and CPs. I set up the data in my default style. This actually leads to a case where `REML=TRUE` (lme4 default) misses a degenerate fit. 
+3. Recommended default lme4 specification uses `REML=FALSE` and `control=lmerControl(calc.derivs=FALSE)`.
+
+I will work with my default specification and variable-naming style to illustrate solutions for some of what you write in _Open Issues_.
+
+```{r revision}
+dat <- 
+  sem_N400_data |> 
+  as_tibble() |> 
+  mutate(Subj = as_factor(paste0("S", str_pad(subject, width = 3, side = "left", pad = "0"))),
+         Item = as_factor(paste0("I", str_pad(item_n, width = 2, side = "left", pad = "0"))),
+         Cond = fct_recode(condition, "plausible" = '1', "implausible" = '9')) |> 
+  select(Subj, Item, Cond, value) |> 
+  arrange(Subj, Item, Cond)
+
+# check distribution? 
+
+# 0 Set contrasts explicitly
+contrasts(dat$Cond) <- contr.treatment(2)
+
+# 1  Recommended default specification
+m2 <-lmer(value ~ Cond + (1+Cond | Subj) + (1 + Cond | Item), data = dat, REML=FALSE,
+          control=lmerControl(calc.derivs=FALSE))
+isSingular(m2)     # not ok
+summary(rePCA(m2)) # not ok
+VarCorr(m2)
+
+# 2  Extract indicator variable from model matrix 
+mm <- model.matrix(~ 1 + Cond, data=dat)
+dat$cond <- mm[, 2]
+
+# 3 Fit zero-correlation parameter LMM
+m3 <-lmer(value ~ Cond + (1+cond || Subj) + (1 + cond || Item), data = dat, REML=FALSE,
+          control=lmerControl(calc.derivs=FALSE))
+isSingular(m3)     # not ok
+summary(rePCA(m3)) # not ok
+VarCorr(m3)
+
+# 4 Fit only varying intercepts LMM for control
+m4 <-lmer(value ~ Cond + (1 | Subj) + (1 | Item), data = dat, REML=FALSE,
+          control=lmerControl(calc.derivs=FALSE))
+
+anova(m4, m3, m2)
+```
+
+RK
+
+1. Your baseline is collinear with the condition effect, both for subjects and items. 
+2. There is no evidence for reliable between-subjects differences in the condition effect.
+ 
+## Open Issues
+
+1. I am interested in individual variability and more specifically within-person variability. For that I have tested the same individuals in 2 different EEG experiments in their first and their second language. Concretely, I am aiming to find differences in the L1 and the L2 concerning N400 and P600. For that I usually extract the slopes by participant and compare them (using correlation tests) with the slopes from the other experiments. What can I do when adding the random slopes gives me a boundary warning? Is there a better way to check for this?
+
+RK: I would need to see the data. There are a few options and we will definitely cover this at SMLP2023. Mainly:
+
++ Make sure the boundary warning is not a false positive. Use the `control=lmerControl(calc.derivs=FALSE)` argument (see above and below).
++ Aim for a parsimonious LMM, that is remove variance components (VCs) and correlation parameter (CPs) not supported by the data.
+
+2. (1+condition|subject) VS (1+condition||subject). Why when extracting the random slopes I get an extra column when the intercept and slope by participant are uncorrelated? How do I solve this? \
+
++ You need to switch from factors to indicator variables. See above In MixedModels.jl you use zerocorr() for factors. 
+
+We save the data for input to Julia. 
+
+```{r output}
+library(arrow)
+write_feather(dat, "data/Iliopoulos_N400.arrow")
+```
+
+
+# Appendix
+
+```{r}
+sessionInfo()
+```
+

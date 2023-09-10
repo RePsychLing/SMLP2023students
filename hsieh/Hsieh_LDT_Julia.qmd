@@ -1,0 +1,172 @@
+---
+title: "Cheng-Yu Hsieh: LDT" 
+subtitle: "RePsychLing in SMLP2023"
+author: "Reinhold Kliegl"
+date: "2023-09-09"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    code-fold: false
+    number-sections: true
+    fig-width: 8
+    fig-height: 6
+editor_options:
+  chunk_output_type: console
+jupyter: julia-1.9
+---
+
+# Description
+
+# Setup
+
+## Packages
+
+```{julia}
+#| label: packages
+
+using AlgebraOfGraphics
+using Arrow
+using CairoMakie
+using DataFrames
+using MixedModels
+using MixedModelsMakie
+using RCall
+using RegressionFormulae
+
+using AlgebraOfGraphics: density
+using AlgebraOfGraphics: boxplot
+using MixedModelsMakie: qqnorm
+using MixedModelsMakie: ridgeplot
+using MixedModelsMakie: scatter
+
+CairoMakie.activate!(; type="svg");
+```
+
+
+```{julia}
+#| label: data
+
+dat = DataFrame(Arrow.Table("data/Hsieh_LDT.arrow"));
+describe(dat)
+```
+
+# Contrasts
+
+We have  the random factors `Subj` and `Item` and declare them as a grouping variables.
+
+```{julia}
+contrasts =  Dict( i => Grouping() for i in (:C1_ID, :C2_ID))
+```
+
+Grouping variables are automatically detected by the program. So this line is not really needed, but good to know.
+
+## Only varying intercept LMM
+
+A quick way to check highest order interactions. 
+```{julia}
+#| label: m_ovi
+
+m1 = let
+    form = @formula(speed ~ 1 + sublx + nghbr + fsc_c1 + nomean_c1 + fsc_c2 + nomean_c2 + (1 | C1_ID) + (1 | C2_ID));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+# Diagnostic plots of LMM residuals
+
+Do model residuals meet LMM assumptions? Classic plots are
+
+  - Residual over fitted
+  - Quantiles of model residuals over theoretical quantiles of normal distribution
+
+## Residual-over-fitted plot
+
+The slant in residuals show a lower and upper boundary of reaction times, that is we have have too few short and too few long residuals. Not ideal, but at least width of the residual band looks similar across the fitted values, that is there is no evidence for heteroskedasticity.
+
+```{julia}
+#| code-fold: true
+#| label: fig-m1fittedresid
+#| fig-cap: Residuals versus fitted values for model m1
+scatter(fitted(m1), residuals(m1); alpha=0.3)
+```
+
+With many observations the scatterplot is not that informative. Contour plots or heatmaps may be an alternative.
+
+```{julia}
+#| code-fold: true
+#| eval: false
+#| label: fig-m1fittedresid2
+#| fig-cap: Heatmap of residuals versus fitted values for model m1
+set_aog_theme!()
+draw(
+  data((; f=fitted(m1), r=residuals(m1))) *
+  mapping(
+    :f => "Fitted values from m1", :r => "Residuals from m1"
+  ) *
+  density();
+)
+```
+
+## Q-Q plot
+
+The plot of quantiles of model residuals over corresponding quantiles of the normal distribution should yield a straight line along the main diagonal.
+
+```{julia}
+#| code-fold: true
+#| eval: false
+#| label: fig-qqnormm1
+#| fig-cap: Quantile-quantile plot of the residuals for model m1 versus a standard normal
+
+qqnorm(m1; qqline=:none)
+```
+
+## Observed and theoretical normal distribution
+
+```{julia}
+#| code-fold: true
+#| eval: false
+#| label: fig-stdresidm1dens
+#| fig-cap: '  Kernel density plot of the standardized residuals for model m1 versus a  standard normal'
+let
+  n = nrow(dat)
+  dat_rz = (;
+    value=vcat(residuals(m1) ./ std(residuals(m1)), randn(n)),
+    curve=repeat(["residual", "normal"]; inner=n),
+  )
+  draw(
+    data(dat_rz) *
+    mapping(:value; color=:curve) *
+    density(; bandwidth=0.3);
+  )
+end
+```
+
+# Caterpillar plot of conditional modes
+
+Here we expect an S-shape for normal distribution of conditional modes.
+
+```{julia}
+#| code-fold: true
+#| eval: false
+#| label: fig-caterpillar_C1_ID
+#| fig-cap: Prediction intervals of the subject random effects in model m1
+cm1 = first(ranefinfo(m1))
+caterpillar!(Figure(; resolution=(800, 1200)), cm1; orderby=1)
+```
+
+```{julia}
+#| code-fold: true
+#| eval: false
+#| label: fig-caterpillar_C2_ID
+#| fig-cap: Prediction intervals of the subject random effects in model m1
+cm2 = last(ranefinfo(m1))
+caterpillar!(Figure(; resolution=(800, 1200)), cm2; orderby=1)
+```
+
+
+# Appendix
+```{julia}
+versioninfo()
+```

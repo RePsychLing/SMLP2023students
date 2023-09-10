@@ -1,0 +1,324 @@
+---
+title: "Dongpeng Pan: Visual World Paradigm" 
+subtitle: "RePsychLing in SMLP2023"
+author: "Reinhold Kliegl"
+date: "2023-09-09"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    code-fold: false
+    number-sections: true
+    fig-width: 8
+    fig-height: 6
+editor_options:
+  chunk_output_type: console
+jupyter: julia-1.9
+---
+
+# Description
+
+# Setup
+
+## Packages
+
+```{julia}
+#| label: packages
+
+using AlgebraOfGraphics
+using Arrow
+using CairoMakie
+using DataFrames
+using MixedModels
+using MixedModelsMakie
+using RCall
+using RegressionFormulae
+using Statistics
+
+using AlgebraOfGraphics: density
+using AlgebraOfGraphics: boxplot
+using MixedModelsMakie: qqnorm
+using MixedModelsMakie: ridgeplot
+using MixedModelsMakie: scatter
+
+CairoMakie.activate!(; type="svg");
+```
+
+# Linear Mixed Models and Growth Curve Analysis
+
+A series of regression models were conducted to investigate the relationship between anticipatory bias in eye-movements across the 3000ms peroid, and how this may vary with age, using linear, quadratic, or cubic terms. Where more than one model fit was significant, the best fitting model was deduced by comparing the simpler model against the more complex model using an ANOVA (i.e., linear vs. quadratic, quadratic vs. cubic). If the p-value was greater than .05, then the simpler model was selected as the best fitting model.
+
+```{julia}
+#| label: data
+
+dat = DataFrame(Arrow.Table("data/Pan_VWP.arrow"));
+describe(dat)
+levels(dat.SQ)
+levels(dat.Task)
+```
+
+# Contrasts
+
+We have  the random factors `Subj` and `Item` and declare them as a grouping variables.
+
+```{julia}
+contrasts =  merge(
+     Dict( i => Grouping() for i in (:Subj, :Item)),
+     Dict( j => HelmertCoding() for j in (:SQ, :Task)))
+```
+
+Grouping variables are automatically detected by the program. So this line is not really needed, but good to know.
+
+Are  _DummyCoding_ constrasts the best settings for the two contrasts of `Task` and the one contrast fof `SQ`? I nominate 
+ _HelmertCoding_  as an altenative. With this specification, the intercept estimates the Grand Mean; the SQ contrast estimates the difference between low and high sound quality;  for task, the first contrast estimates the difference between interpretation and comprehension. When you include data from the production task, the second Helmert contrast tests the difference between production and the average of the first two levels. You don't have to agree with me, of course!
+
+# Only varying intercept LMM
+
+Usually, I prefer to use a top-down strategy for model selection, especially wrt to the random-effect structure. Here I follow the submitted model sequence proposed by Dongpeng Pan. 
+
+## Model 1: A base model without task
+```{julia}
+#| label: m_ovi1
+
+m_ovi1 = let
+    form = @formula(prpD ~ 1 + SQ*(ot1+ot2+ot3) + (1 | Subj) + (1 | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+Not much see here. 
+
+## Model 1a: A base model without task and only linear trend across ot
+
+Model 1 to Model 2 implements two changes: 
+
+1. Reduces the cubic polynomial to a linear `ot` trend
+2. Add `Task` effects
+
+I insert Model 1a to maintain the option of testing the `Task` effects.
+
+```{julia}
+#| label: m_ovi1a
+
+m_ovi1a = let
+    form = @formula(prpD ~ 1 + SQ*ot1 + (1 | Subj) + (1 | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+Do we lose goodness of fit?
+
+```{julia}
+#| label: compare1
+MixedModels.likelihoodratiotest(m_ovi1a, m_ovi1)
+```
+
+Definitely not. 
+
+## Model 2: Linear model across ot, including task,
+
+
+```{julia}
+#| label: m_ovi2
+
+m_ovi2 = let
+    form = @formula(prpD ~ 1 + Task*SQ*ot1 + (1 | Subj) + (1 | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+Is the ensemble of  `Task` contrasts significant?
+
+```{julia}
+#| label: compare3
+MixedModels.likelihoodratiotest(m_ovi1a, m_ovi2)
+```
+
+If we have strong hypotheses, which I assume we have wrt to `Task`: Yes, it is.
+
+## Model 3: Change from linear trend to quadratic polynomial across ot
+
+```{julia}
+#| label: m_ovi3
+
+m_ovi3 = let
+    form = @formula(prpD ~ 1 + Task*SQ*(ot1 + ot2) + (1 | Subj) + (1 | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+Do we evidence for a quadratic trend across ot?
+
+```{julia}
+#| label: compare4
+MixedModels.likelihoodratiotest(m_ovi2, m_ovi3)
+```
+
+No, we don't.
+
+## Model 4: Change from quadratic to cubic polynomial
+
+```{julia}
+#| label: m_ovi4
+
+m_ovi4 = let
+    form = @formula(prpD ~ 1 + Task*SQ*(ot1 + ot2 + ot3) + (1 | Subj) + (1 | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+Do we evidence for a quadratic trend across ot?
+
+```{julia}
+#| label: compare5
+MixedModels.likelihoodratiotest(m_ovi3, m_ovi4)
+```
+
+No, we don't.
+
+
+# Complex  LMM with SQ in RES
+
+## Model 1: A base model without task
+```{julia}
+#| label: m_cpx1
+
+m_cpx1 = let
+    form = @formula(prpD ~ 1 + SQ*(ot1+ot2+ot3) + (1 + SQ | Subj) + (1 + SQ | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+Not much see here. 
+
+Do we increase goodness of fit relative `m_ovi1`?
+
+```{julia}
+#| label: compareX1
+MixedModels.likelihoodratiotest(m_ovi1, m_cpx1)
+```
+
+Definitively, yes.
+
+## Model 1a: A base model without task and only linear trend across ot
+
+Model 1 to Model 2 would implement two changes: 
+
+1. Reduces the cubic polynomial to a linear `ot` trend
+2. Add `Task` effects
+
+I insert Model 5a to maintain the option of testing the `Task` effects.
+
+```{julia}
+#| label: m_cpx1a
+
+m_cpx1a = let
+    form = @formula(prpD ~ 1 + SQ*ot1 + (1 + SQ | Subj) + (1 + SQ | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+Do we lose goodness of fit?
+
+```{julia}
+#| label: compareX2
+MixedModels.likelihoodratiotest(m_cpx1a, m_cpx1)
+```
+
+Definitely not. 
+
+## Model 2: Linear model across ot, including task,
+
+
+```{julia}
+#| label: m_cpx2
+
+m_cpx2 = let
+    form = @formula(prpD ~ 1 + Task*SQ*ot1 + (1 + SQ | Subj) + (1 + SQ | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+Is the ensemble of  `Task` contrasts significant?
+
+```{julia}
+#| label: compareX3
+MixedModels.likelihoodratiotest(m_cpx1a, m_cpx2)
+```
+
+If we have very, very strong hypotheses, which I assume we have wrt to `Task`: Perhaps
+
+## Model 3: Change from linear trend to quadratic polynomial across ot
+
+```{julia}
+#| label: m_cpx3
+
+m_cpx3 = let
+    form = @formula(prpD ~ 1 + Task*SQ*(ot1 + ot2) + (1 + SQ | Subj) + (1 + SQ | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+
+## Model 4: Change from quadratic to cubic polynomial across ot
+
+```{julia}
+#| label: m_cpx4
+
+m_cpx4 = let
+    form = @formula(prpD ~ 1 + Task*SQ*(ot1 + ot2 + ot3) + (1 + SQ | Subj) + (1 + SQ | Item));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+
+# Model comparisons
+
+## LRT 
+
+```{julia}
+#| label: compareX4
+MixedModels.likelihoodratiotest(m_ovi1a, m_ovi2, m_ovi3, m_ovi4)
+```
+
+```{julia}
+#| label: compareX5
+MixedModels.likelihoodratiotest(m_cpx1a, m_cpx2, m_cpx3, m_cpx4)
+```
+
+## AIC / BIC
+
+```{julia}
+#| label: compareX6
+#| 
+let mods = [m_ovi1a, m_ovi2, m_ovi3, m_ovi4];
+ DataFrame(;
+    model=[:m_ovi1a, :m_ovi2, :m_ovi3, :m_ovi4],
+    pars=dof.(mods),
+    geomdof=round.(Int, (sum ∘ leverage).(mods)),
+    AIC=round.(Int, aic.(mods)),
+    AICc=round.(Int, aicc.(mods)),
+    BIC=round.(Int, bic.(mods)),
+  )
+end
+```
+
+
+```{julia}
+let mods = [m_cpx1a, m_cpx2, m_cpx3, m_cpx4];
+ DataFrame(;
+    model=[:m_cpx1a, :m_cpx2, :m_cpx3, :m_cpx4],
+    pars=dof.(mods),
+    geomdof=round.(Int, (sum ∘ leverage).(mods)),
+    AIC=round.(Int, aic.(mods)),
+    AICc=round.(Int, aicc.(mods)),
+    BIC=round.(Int, bic.(mods)),
+  )
+end
+```
+
+# Appendix
+```{julia}
+versioninfo()
+```

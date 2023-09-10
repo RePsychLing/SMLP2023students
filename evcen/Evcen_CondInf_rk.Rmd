@@ -1,0 +1,371 @@
+---
+title: "Conditional Inferences: RT experiment"
+author: Ebru Evcen
+date: '2023-08-10'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+```{r, include=FALSE}
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(lme4)
+library(lmerTest)
+library(tidyr)
+if(!require("emmeans")){install.packages("emmeans"); require(emmeans)} 
+
+
+options(scipen=999)
+```
+
+```{r}
+dat <- read.csv('data/evcen_smlp23.csv')
+glimpse(dat)
+```
+
+
+```{r, include=FALSE}
+dat <- dat %>% 
+  mutate(condition=as.factor(condition),
+         Participant=as.factor(Participant),
+         item=as.factor(item),
+         type=as.factor(type),
+         answer_correct=as.factor(answer_correct),
+         response=as.factor(response))
+```
+
+## Background
+The data here is from a timed sentence-picture verification task with Response (Yes/No) and Reaction Time as DVs. 
+
+The experiment investigates whether pragmatic/enriched interpretations listener infer from standard conditionals (i.e., Conditional Perfection) is more costly compared to logical interpretation of conditionals. We compare RTs of pragmatic interpretation of standard conditionals to i) control conditions (logical interpretations of the same type of conditional) and ii) biscuit conditionals (where the pragmatic interpretation is not available)
+
+The experiment has a 2x2 design where the variables are **Type** (Standard vs. Biscuit) and **Category** of trials (Control vs. Target). 
+
+The analysis includes data from 78 participants (72, post exclusions based on pre-registered criteria) who rated 18 critical items (9 in each of the conditional types). 
+
+The gaol of the analysis is to see whether logical interpretation of biscuit conditionals (target, biscuit, 'yes' responses) is significantly more costly than pragmatic interpretation of standard conditionals (target, standard, 'no' responses)
+
+### Variables
+* Participant: Participant ID
+* group: Latin-squared groups
+* item: trial
+* Type (within-subject): 
+  + Standard: Standard conditionals (where both pragmatic and logical interpretations are available)
+  + Biscuit: Biscuit conditionals (where only logical interpretation is available)
+* Category/Condition (within-subject): 
+  + control: TT, TF --> fixed truth value
+  + target: FT --> truth-value depends on the interpretation
+* Response (within-subject): 
+  + Yes 'F': response compatible with logical interpretation 
+  + No 'J': response compatible with pragmatic interpretation
+* RT: reaction time 
+
+
+RK: Also needed is which factors are within-/between-items: category and response are within item, type = between-item.
+
+## Data prep
+### Excluding outliers (Accuracy)
+```{r}
+keypress <- dat %>% 
+  mutate(comp_check = ifelse(response== "F" & answer_correct == "yes", "1",
+                      ifelse(response== "J" & answer_correct == "no", "1",
+                      ifelse(answer_correct=='depends', "depends", "0"))))
+
+keypress <- keypress %>% 
+  mutate(comp_check=as.numeric(comp_check))
+
+keypress.check <- keypress %>% 
+  group_by(Participant, group) %>% 
+  filter(comp_check!='NA') %>% 
+  dplyr::summarize(sum=sum(comp_check))
+
+to.exclude.keypress <- keypress.check %>%  #out of 21 items, %80 correct answer required, at least 16 correct answers needed.
+  filter(sum < 16) 
+  
+clean.dat1 <- keypress %>% 
+  filter(!Participant %in% to.exclude.keypress$Participant) #75 participants
+
+```
+### Excluding outliers (Reaction Time)
+```{r}
+mean_stats <- clean.dat1 %>%
+dplyr::summarise(mean = mean(RT),
+            sd = sd(RT))
+
+# Exclude participants who have more than 20% of their reaction time data  outside of 2.5 standard deviations from the mean
+upper = mean_stats$mean + 2.5 * mean_stats$sd
+lower = mean_stats$mean - 2.5 * mean_stats$sd
+
+rt_outliers <- clean.dat1 %>% 
+  mutate(outside = (RT > upper | RT < lower))
+
+rt_outliers <- rt_outliers %>% 
+  mutate(outside=case_when(outside==TRUE ~ 1,outside==FALSE~ 0))
+
+exclude.rt <- rt_outliers %>% ##If sum > 5, exclude. 
+  group_by(Participant, group) %>% 
+  dplyr::summarize(sum_outside=sum(outside))
+
+exclude.rt <- exclude.rt %>% 
+  filter(sum_outside >5)  
+
+clean.dat2 <- clean.dat1 %>% 
+  filter(!Participant %in% exclude.rt$Participant)
+
+dat.final <- inner_join(clean.dat2, rt_outliers)
+
+dat.final <- dat.final %>% #Exclude fillers 
+  filter(type!='filler')
+
+##Final dataset includes 72 participants (n=24 per group).
+```
+
+## Descriptives
+```{r}
+dat.final$comp_check <- replace(dat.final$comp_check, is.na(dat.final$comp_check), 1)
+
+dat.prop <- dat.final %>% 
+   mutate(category = ifelse(condition== "TT", "control_yes",
+                      ifelse(condition== "TF", "control_no",
+                      ifelse(condition=='FT', "target", 0))))
+
+##Proportion of logical 'yes' reponses
+prop.response <- dat.prop %>% 
+  group_by(type,category, response) %>% 
+  dplyr::summarise(n=n()) %>% 
+ dplyr:: mutate(logical_yes =(n*100)/sum(n)) %>% 
+  filter(response=='F') %>% 
+ ggplot(aes(x=category,y=logical_yes, fill=type)) + 
+   geom_bar(stat='identity',position = 'dodge') + 
+  geom_text(aes(label=round(logical_yes, 2)), position = position_dodge(width = 1))+
+  ylab('proportion of logical yes responses')+
+  theme_bw()
+
+print(prop.response)
+```
+
+
+```{r}
+dat.final <- dat.final %>%  #Exclude outlier 'trials' by RT
+  filter(outside==0)
+
+dat.final <- dat.final %>% #Exclude trials which are inaccurate
+  filter(comp_check==1)
+
+dat.final <- dat.final %>% 
+   mutate(category = ifelse(condition== "TT", "control",
+                      ifelse(condition== "TF", "control",
+                      ifelse(condition=='FT', "target", 0))))
+
+# Compute average RT by type, category and response
+mean.RTs <- dat.final %>% 
+  group_by(type, category, response) %>%
+  dplyr::summarise(
+    .groups = "keep",
+    N      = length(RT),
+    Mean   = mean(RT, na.rm = TRUE),
+    SD     = sd(RT, na.rm = TRUE),
+    SE=SD/sqrt(N),
+    CIlow  = Mean - (qnorm(0.975) * SD / sqrt(N)),
+    CIhigh = Mean + (qnorm(0.975) * SD / sqrt(N)),
+    )
+
+view(mean.RTs)
+```
+
+
+```{r}
+RT.plot <- mean.RTs %>% 
+ mutate(response_new = ifelse(response == "F", "logical yes", ifelse(response == "J", "pragmatic no", response))) %>%
+  mutate(response_new = factor(response_new, levels = rev(c("pragmatic no", "logical yes")))) %>%
+ggplot(aes(x=response_new, y=Mean, color=type)) +
+  geom_point(size=2) +
+  geom_line(linewidth=0.7, aes(group=type)) +
+  geom_errorbar(aes(ymin=Mean-SE, ymax=Mean+SE), width=.1, linewidth=0.7) +
+  facet_grid(.~category) +
+  labs(x="Response", y="Reaction time [ms]") +
+  theme_bw(base_size=13)
+
+print(RT.plot)
+
+```
+
+## Analyses
+
+```{r}
+dat.final<- dat.final %>% 
+    mutate(log_RT=log(RT))
+
+dat.final$categoryC <- ifelse(dat.final$category == 'control', -.5, .5)
+dat.final$categoryC <- scale(dat.final$categoryC, center=T, scale=F)
+
+dat.final$responseC <- ifelse(dat.final$response == 'F', -.5, .5)
+dat.final$responseC <- scale(dat.final$responseC, center=T, scale=F)
+
+dat.final$typeC <- ifelse(dat.final$type == 'standard', -.5, .5)
+dat.final$typeC <- scale(dat.final$typeC, center=T, scale=F)
+```
+
+RK: This is ok, but I would recommend using contrasts on factors and, when needed, extract indicator variables from the model matrix. Also, Douglas Bates does not like -/+ 1/2 coding because indicators for interaction terms become very small which may lead to numerical instability. 
+
+I want to say that I never encountered the problem and like the coding because you get the difference between levels rather than the difference from the Grand Mean as estimate.
+
+Note the defaul call to lmer() should use the following arguments:
+
+1. REML=FALSE and 
+2. control=lmerControl(calc.derivs = FALSE)
+
+```{r}
+##Forward step-wise models to choose the random effects structure
+m.base <- lmer(log_RT ~ categoryC* typeC * responseC+ (1|item) + (1|Participant), 
+                 data = dat.final, REML=FALSE, control=lmerControl(calc.derivs = FALSE))
+
+m.rand1 <- lmer(log_RT ~ categoryC* typeC*responseC+ (1+categoryC|item) + (1|Participant), 
+                 data = dat.final, REML=FALSE, control=lmerControl(calc.derivs = FALSE))
+VarCorr(m.rand1)       
+summary(rePCA(m.rand1))
+anova(m.base, m.rand1) #better model; RK: not according to BIC
+
+m.rand2 <- lmer(log_RT ~ categoryC*typeC*responseC+ (1+categoryC+responseC|item) + (1|Participant), 
+                  data = dat.final, REML=FALSE, control=lmerControl(calc.derivs = TRUE))
+VarCorr(m.rand2)
+summary(rePCA(m.rand2)) # 
+anova(m.rand1, m.rand2) # even better fit 
+
+m.rand3 <- lmer(log_RT ~ categoryC*typeC*responseC+ (1+categoryC+typeC+responseC|item) + (1|Participant), 
+                   data = dat.final, REML=FALSE, control=lmerControl(calc.derivs = FALSE))
+VarCorr(m.rand3)
+summary(rePCA(m.rand3))  # degenerate model!
+anova(dat.rand2, dat.rand3) #better fit; but singular fit?? 
+# RK: statistics are questionable for degenerate models. Also model is not better according to AIC and BIC.
+# RK: I also think that type is between-item, Therefore, it should not appear as Item-related VC.
+
+m.rand4 <- lmer(log_RT ~ categoryC* typeC * responseC+ (1+categoryC+responseC+typeC|item) + (1+responseC|Participant), 
+                   data = dat.final, REML=FALSE, control=lmerControl(calc.derivs = FALSE))
+VarCorr(m.rand4)
+summary(rePCA(m.rand4))
+anova(m.rand3, m.rand4) #singular fit, response|Participant not warranted
+
+m.rand5 <- lmer(log_RT ~ categoryC* typeC * responseC+ (1+categoryC+responseC+typeC|item) + (1+categoryC|Participant), 
+                data = dat.final, REML=FALSE, control=lmerControl(calc.derivs = FALSE))
+VarCorr(m.rand5)
+summary(rePCA(m.rand5))
+anova(m.rand4, m.rand5) 
+#singular fit, what does this mean?: Chisq 0, Df 0? 
+# RK: m.rand4 and m.rand5 are not nested models; you simply exchanged one VC for another. So they have the same number of degrees of freedom. 
+
+## m.rand3 is the winner! No additional random slopes warranted.
+## RK: I would not pick a degenerate model as winner. In this sequence, m.rand2 would be my pick. There are options between the two models (i.e., forcing correlation parameters to zero).
+```
+
+RK: Issues to talk about -- make sure we discuss them!
+
+1. REML = FALSE or REML = TRUE
+2. lmerControl(calc.derivs=FALSE) or lmerControl(calc.derivs=TRUE)
+3. LRT vs. AIC vs. BIC for model selection
+4. Zero-correlation parameter Options (e.g., between m.rand2 and m.rand3)
+5. Nested vs. non-nested LMMs (see m.rand4 and m.rand5)
+
+```{r}
+##Backward step-wise regression to trim the effects
+m.rand3.reduced1 <- lmer(log_RT ~ categoryC*typeC +categoryC*responseC+ typeC*responseC+
+                               (1+categoryC+typeC+responseC|item) + (1|Participant), 
+                         data = dat.final, REML=FALSE, control=lmerControl(calc.derivs = FALSE))
+#singular fit
+VarCorr(m.rand3.reduced1 )
+summary(rePCA(m.rand3.reduced1))
+anova(m.rand3, m.rand3.reduced1) #lower AIC, but not significant 
+#RK: Questionable comparison because singular, but all indicators favor m.rand3.reduced1
+# RK: Again, Type is between-item and must not appear as Item-related VC
+
+m.rand3.reduced2 <- lmer(log_RT ~ categoryC*typeC + typeC*responseC+
+                                (1+categoryC+responseC+typeC|item) + (1|Participant), 
+                           data = dat.final, REML=FALSE, control=lmerControl(calc.derivs = FALSE))
+VarCorr(m.rand3.reduced2)
+summary(rePCA(m.rand3.reduced2))
+anova(m.rand3.reduced1, m.rand3.reduced2) #lower AIC, but not significant -but the effects are different?
+#RK: Questionable comparison because singular, but all indicators favor m.rand3.reduced2
+
+m.rand3.reduced3 <- lmer(log_RT ~ categoryC*typeC + responseC+
+                                 (1+categoryC+responseC+typeC|item) + (1|Participant), 
+                          data = dat.final, REML=FALSE, control=lmerControl(calc.derivs = FALSE))
+VarCorr(m.rand3.reduced3)
+summary(rePCA(m.rand3.reduced3))  # RK: Still overparameterized; 
+anova(m.rand3.reduced2, m.rand3.reduced3) #higher AIC, stop minimizing the model
+# RK All indicators favor m.rand3.reduced3
+
+summary(m.rand3)
+summary(m.rand3.reduced2) ##LOWEST AIC, but not significantly different than 'm.rand3'
+# RK: Well, m.rand3 is overparameterized; m.rand3.reduced2 is also barely not overparameterized
+
+# RK: Let's compare with m.rand2
+anova(m.rand2, m.rand3.reduced3)
+# RK: AIC and BIC favor m.rand2 over m.rand3.reduced3
+```
+
+
+```{r}
+##Unpack interactions
+simple_effects <- emmeans(m.rand2, ~ categoryC|typeC)
+pairs(simple_effects)
+```
+
+# File for input in Julia
+
+I change a few names to comply with my style for nameing random factors and factors.
+
+```{r}
+library(arrow)
+
+dat.out <- 
+  dat.final |> 
+  rename(Subj = Participant, Item = item, Type=type, Cat = category, Resp = response,
+         rt = RT, acc = answer_correct) |> 
+  mutate(Cat = as.factor(Cat),
+         Subj = as_factor(paste0("S", str_pad(Subj, width = 4, side = "left", pad = "0"))),
+         Item = as_factor(paste0("I", str_pad(Item, width = 2, side = "left", pad = "0")))) |> 
+  droplevels() |> 
+  dplyr::select(Subj, Item, Type, Cat, Resp, rt, acc)
+names(dat.out)
+write_feather(dat.out, "data/Evcen_CondInf.arrow")
+nrow(dat.out)
+```
+
+## Analysis/modeling issues:
+
+1.Random Slopes: How can we make sure that our selected model’s random effects structure is empirically substantiated by the data? What is the most rigorous approach to select random slopes that can be logically warranted by the data?
+
+RK: See above. Aim for parsimonious LMM; one that is not overparameterized. VarCorr() and summary(rePCA()) are useful for this.
+
+2.Model Selection: Would it be more methodologically sound to choose the model with the lowest AIC as the ‘best-fitting’ model (e.g., dat.rand3.reduced2), even if statistical differences with the maximal model (e.g., dat.rand3) are not significant? How can we find the right balance between an overfitting model vs better-fitting model?
+
+RK: We will cover this in SMLP2023. Basically: 
+
++ Use LRT when you have very strong a priori hypotheses
++ Use AIC when the terms you compare are theoretically motivated. AIC has to be lower by at least 5 units.
++ Use BIC when the terms you are in exploratory mode, that is you just want to make sure you don't miss an important source of variance, but you don't really expect anything on the basis of theory. BIC has to be lower by at least 5 units.
++ I favor parsimonious model selection, that is also selectively reducing the correlation parameters.The goal is to determine the most complex model that is supported by the data (not overparameterized, not degenerate). 
+
+3.Singular Fit: What are some practical ways to fix or deal with singular fit? 
+
+RK:  We will cover this in SMLP2023. Basically: 
+
++ Use: control=lmerControl(calc.derivs = FALSE)
++ Reduce the model complexity by removing VCs and CPs not supported by the data
+
+4.Given the limited instances of the 'logical yes' condition within standard conditionals in the target condition (due to participants rarely choosing 'yes' as an answer), how can we confidently discern whether the effects observed are genuinely representative and not merely random noise? Additionally, what strategies might be employed in the modeling process to appropriately account for these sparse data points?
+
+RK: We will cover this in SMLP2023. Basically:
+
++ If cells are very sparse populated, LMMs wan't save you. With floor and ceiling effects you have to re-design your experiment to prevent subjects from being perfect or failing all the time. 
++ If only a few cells of the design are affected by floor/ceiling effects, there are ways of removing these cells from the model matrix. For example, you change a 2 x 2 design to 1 x 3 design. You will not be able to test main effects and interactions, but you can specify two tests comparing the 3 cells. 
+
+Make sure your questions get answered at SMLP2023!
+

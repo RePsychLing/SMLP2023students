@@ -1,0 +1,165 @@
+---
+title: "SMLP Task 1: Replicate Hsieh et al. (upcoming)"
+author: "Cheng-Yu Hsieh" 
+output: md_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(lme4)
+library(lmerTest)
+library(glmmTMB)
+library(tidyverse)
+```
+
+# Data Description
+
+The data were mostly derived from Chinese Lexicon Project of lexical decision (Tse et al., 2017, https://doi.org/10.3758/s13428-016-0810-5) and naming (Tse et al., 2022, https://osf.io/vwnps) performance on traditional two-character compound words. In this analysis, we focused on data of the lexical decision task, where participants were asked to judge if the compound word presented was a real word or a nonword. Using this dataset, we try to replicate key findings of Tse et al. (2017, 2022) by comparing the difference between lexical decision and naming latencies. 
+
+```{r load data from github, echo=TRUE}
+
+gh.link <- "https://raw.githubusercontent.com/cyhsieh-psy/SMLP_exercise/main/Chinese_Lexicon_Project_SMLP.csv"
+df_raw <- read.csv(gh.link, sep = ",", header = TRUE)
+
+```
+
+## Code book (of the relevant vaiables)
+
+1. word: two-character Chinese word
+2. Corr: number of correct trials
+3. Err: number of incorrect trials
+4. Acc: accuracy of trials
+5. RT: reaction time of lexical decision (raw)
+6. zRT: reaction time of lexical decision (z-transformed)
+7. Subtlex_raw_W, Subtlex_raw_C1, Subtlex_raw_C2: raw frequency count of whole word, first character and second (derived from SUBTLEX-CH)
+8. Subtlex_CD_W, Subtlex_CD_C1, Subtlex_CD_C2: raw contextual diversity count of whole word, first character and second (derived from SUBTLEX)
+9. Google_freq_W, Google_freq_C1, Google_freq_C2: raw frequency count of whole word, first character and second (derived from Google)
+10. C1_ID, C2_ID: a label for each character at first position and at second position
+11. neighborhood_C1, neighborhood_C2: neighborhood size of first character and second character
+12. FSC_C1, FSC_C2: family semantic consistency of first character and second character
+13. nomeaning_C1, nomeaning_C2: number of meanings of first character and second character 
+
+# Model Comparison/Selection
+
+```{r model of RT}
+
+# deleting items with missing values
+df_test <- filter(df_raw,
+             Acc >= 0.7,
+             Google_freq_W > 0,
+             Google_freq_C1 > 0,
+             Google_freq_C2 > 0,
+             Subtlex_raw_W > 0, 
+             Subtlex_raw_C1 > 0,
+             Subtlex_raw_C2 > 0,
+             Subtlex_CD_W > 0)
+
+# Models with different sources of frequency count
+mod1 <- lmer(zRT~scale(log(Google_freq_W),scale=F)+
+               scale(log(Google_freq_C1),scale=F)+
+               scale(log(Google_freq_C2),scale=F)+
+               (1 | C1_ID) + (1 | C2_ID), 
+             df_test, REML = F)
+mod2 <- lmer(zRT~scale(log(Subtlex_raw_W),scale=F)+
+             scale(log(Subtlex_raw_C1),scale=F)+
+             scale(log(Subtlex_raw_C2),scale=F)+
+               (1 | C1_ID) + (1 | C2_ID), 
+             df_test, REML = F)
+mod3 <- lmer(zRT~scale(log(Subtlex_CD_W),scale=F)+
+             scale(log(Subtlex_CD_C1),scale=F)+
+             scale(log(Subtlex_CD_C2),scale=F)+
+               (1 | C1_ID) + (1 | C2_ID), 
+             df_test, REML = F)
+
+AIC(mod1, mod2, mod3)
+BIC(mod1, mod2, mod3)
+
+```
+
+# Analysing lexical decision latencies using lmer function
+
+```{r model of RT}
+# deleting items with missing values
+df <- filter(df_raw,
+             Acc >= 0.7,
+             Subtlex_CD_W > 0,
+             Subtlex_CD_C1 > 0,
+             Subtlex_CD_C2 > 0,
+             neighborhood_C1 > 0,
+             neighborhood_C2 > 0,
+             FSC_C1 > 0,
+             FSC_C2 > 0)
+
+# RK check the distribution -- speed conversion is justified
+MASS::boxcox(RT ~ 1 + C1_ID, data=df)
+df$RT_inv <-  1000/df$RT
+
+# RK - random factors should be factors, not integers
+df <- 
+  df |> 
+  as_tibble() |> 
+  mutate(C1_ID = as_factor(paste0("C1_ID", str_pad(C1_ID, width=4, side="left", pad="0"))),
+         C2_ID = as_factor(paste0("C2_ID", str_pad(C2_ID, width=4, side="left", pad="0"))))
+
+# model specification
+model.word.RT <- lmer(RT_inv ~ scale(log(Subtlex_CD_W),scale=F)+
+                        scale(log(neighborhood_C1),scale=F)+
+                        scale(FSC_C1,scale=F)+
+                        scale(nomeaning_C1,scale=F)+
+                        scale(log(neighborhood_C2),scale=F)+
+                        scale(FSC_C2,scale=F)+
+                        scale(nomeaning_C2,scale=F)+
+                        (1 | C1_ID) + (1 | C2_ID),
+                      data = df, REML = TRUE)
+print(summary(model.word.RT), cor=FALSE)
+```
+
+# Analysing lexical decision accuracy using glmmTMB function
+```{r model of accuracy}
+y <- cbind(df$Corr, df$Err)
+word.Acc <- glmmTMB(y ~ scale(log(Subtlex_CD_W),scale=F)+
+                        scale(log(neighborhood_C1),scale=F)+
+                        scale(FSC_C1,scale=F)+
+                        scale(nomeaning_C1,scale=F)+
+                        scale(log(neighborhood_C2),scale=F)+
+                        scale(FSC_C2,scale=F)+
+                        scale(nomeaning_C2,scale=F)+
+                        (1 | C1_ID) + (1 | C2_ID),
+                       family = betabinomial,
+                       data = df, REML=TRUE)
+
+summary(word.Acc)
+
+```
+
+
+# Analysis/modelling issues:
+
+1. For model comparison analysis, are there any other approaches better than comparing the AIC/BIC across different models? 
+
+2. How to choose the appropriate model for accuracy data? Shall we input number of correct and incorrect trials for binomial models? Or is it possible to input the percentage of accuracy (0%-100%) as a continuous variable? How to deal with overdispersion?
+
+3. What is the best effect size(s) reported for (G)LMM?
+
+4. It takes long time to estimate the model for accuracy data. Are there ways to optimise and speed up the process?
+
+RK: Your questions will be dealt with at SMLP2023. Just make sure they are not forgotten :). Here I output a file for input to Julia. I like short variable names.
+
+```{r}
+dat <- 
+  df |> 
+  mutate(speed = RT_inv, corr=Corr, err=Err,
+         sublx = scale(log(Subtlex_CD_W), scale = F),
+         nghbr = scale(log(neighborhood_C1), scale = F),
+         fsc_c1 = scale(FSC_C1, scale = F),
+         nomean_c1 = scale(nomeaning_C1, scale = F),
+         fsc_c2 = scale(FSC_C2, scale = F),
+         nomean_c2 = scale(nomeaning_C2, scale = F)) |> 
+  select(C1_ID, C2_ID, sublx, nghbr, fsc_c1, nomean_c1, fsc_c2, nomean_c2, speed, corr, err)
+
+library(arrow)
+write_feather(dat, "data/Hsieh_LDT.arrow")
+```
+

@@ -1,0 +1,495 @@
+---
+title: "Dongpeng_Visual World Paradigm"
+author: "LaborInt"
+date: "2023-09-03"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# Title: The effect of sound quality on attention and load in language tasks
+
+- **Objective**: Examine the impact of sound quality on attention and cognitive load in language tasks.
+- **Tasks**: Sentence comprehension, production, and simultaneous interpreting.
+- **Method**: Visual-world eye-tracking to assess gaze patterns and pupil dilation.
+- **Participants**: 42 professional conference interpreters.
+  - **Languages**: L1 in French, German, Spanish, Italian, or Russian; L2 in English.
+- **Experimental Design**: 
+  - 36 visual arrays with three differently-sized object images.
+  
+  - Auditory stimulus for comprehension & interpretation: context + location description.
+  - Auditory stimulus for production: context only.
+  - Visuals present during introductory sentence; blank screen during critical sentence.
+- **Sound Quality**: 
+  - High Quality (HQ): 125Hz to 15KHz frequency range.
+  - Low Quality (LQ): 300Hz to 3400Hz frequency range.
+- **Presentation Structure**: Tasks blocked and randomized.
+- **analysis involved**: 
+  - 1. Clustered permutation for comprehension and interpreting, gaze proportion 
+  - 2. GLMM and Growth curve analysis for comprehension and interpreting, gaze proportion, per time window
+  - 3. functional analysis and GLMM for for comprehension and interpreting, pupil data
+  - 4. z-standardized time plot per Interest period: comprehension, interpreting, production (possible analysis to be discussed during the Summer School)
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+```
+
+
+# 2. Growth curve analysis for comprehension and interpreting, gaze proportion 
+Analysis of the gaze proportion of in three time Windows: 
+* The_X (Agent)
+* Is_Next_To
+* The_Y (Patient)
+Variables:
+* Task (Comprehension, Interpreting)
+* Sound_quality (High Quality, Low Quality)
+
+
+```{r}
+library("Matrix")
+library("plyr")
+library("tidyr")
+library("lme4")
+library("lmerTest")
+library("ggplot2")
+library("eyetrackingR")
+library("dplyr")
+
+library("pbapply")
+library("cowplot")
+
+library("quantreg")
+library("extrafont")
+library("tidyverse")
+library("harrypotter")
+```
+## [Key Section] 2.1 The_X (Agent)
+```{r}
+agent_test_c_i <- readRDS("data/agent_test_c_i.rds")
+str(agent_test_c_i)
+```
+Key variables :
+
+1. **participant**: Identifies individual participants. It's a factor with 42 levels.
+   
+2. **TRIAL_INDEX**: Represents the unique identifier for each trial, an integer value.
+   
+3. **LEFT_GAZE_X & LEFT_GAZE_Y**: Numerical values representing the x and y coordinates of the left eye's gaze position, respectively.
+   
+4. **LEFT_INTEREST_AREAS & LEFT_INTEREST_AREA_ID & LEFT_INTEREST_AREA_LABEL**: These capture the specific area of interest that the left eye gaze is on. They come in different formats: numerical, ID, and label.
+   
+5. **TIMESTAMP**: Indicates the exact time of the recording. It's a continuous numerical value.
+   
+6. **TRIAL_LABEL**: Categorically labels each trial, like "Trial: 10". It's a factor with 37 levels.
+   
+7. **IP_START_TIME & IP_END_TIME**: Represents the start and end times of the presentation of the article sound, respectively.
+   
+8. **identifier**: This is a categorical variable used to uniquely identify trials or conditions. It's a factor with 66 levels.
+   
+9. **task**: Specifies the type of task performed, such as comprehension. It's a factor with 3 levels.
+   
+10. **sound_quality**: Describes the sound quality during the task. It's a factor with 2 levels: HQ (High Quality) and LQ (Low Quality).
+    
+11. **item**: Specifies the particular item under observation. It's a factor with 108 levels.
+    
+12. **TrackLoss**: A logical (boolean) variable indicating if there was a loss in tracking during the trial (TRUE if there was a loss, FALSE otherwise).
+    
+13. **Outside, TargetX, TargetY, FOIL**: Logical variables indicating if the gaze is outside any area of interest or on specific target areas (TargetX or TargetY) or on a foil.
+
+### Make Eyetracking R Data
+
+```{r}
+library(eyetrackingR)
+
+agent_test_c_i_etr <- make_eyetrackingr_data(agent_test_c_i,
+                                             participant_column = "participant",
+                                             trial_column = "TRIAL_INDEX",
+                                             time_column = "TIMESTAMP",
+                                             trackloss_column = "TrackLoss",
+                                             aoi_columns = c('TargetX', 'TargetY', 'FOIL'),
+                                             treat_non_aoi_looks_as_missing = FALSE, # pay attention, should be TRUE, if only focus on AOIs
+                                             item_columns = 'item'
+                                             )
+
+```
+
+#### Construct a unique identifier
+```{r}
+#creates a "unique trial" column 
+agent_test_c_i_etr<- agent_test_c_i_etr %>% mutate(UniqueTrial = paste(agent_test_c_i_etr$participant, agent_test_c_i_etr$item, sep = '_'))
+```
+
+####Set the exported IP to timestamp of 0. Begins right at the presentation of article sound
+
+```{r}
+agent_sentence_window <- subset_by_window(agent_test_c_i_etr, rezero = TRUE, remove = TRUE,
+                                    window_start_col = "IP_START_TIME", 
+                                    window_end_col = "IP_END_TIME")
+```
+#### Determine Trial Length
+```{r}
+# Load necessary library
+library(dplyr)
+
+# Calculate trial length
+agent_sentence_window <- agent_sentence_window %>%
+  mutate(trial_length = IP_END_TIME - IP_START_TIME)
+
+# Get the max time value for each trial
+max_time_values <- agent_sentence_window %>%
+  group_by(participant, item) %>%
+  summarise(max_time = max(trial_length))
+
+# Get the min time value among these max values for comprehension and interpreting separately
+min_max_time_values <- max_time_values %>%
+ # group_by(item) %>%
+  summarise(min_max_time = min(max_time))
+
+# Print the result
+print(min_max_time_values)%>%print(n = 100)
+
+```
+
+#### Zoom in to sentence window 
+Rezeros as well, so all times are now saccade-time-adjusted. No need for further adjustments.
+
+```{r}
+agent_sentence_window <- subset_by_window(agent_sentence_window, 
+                                window_start_time = 0, 
+                                window_end_time = 666,
+                                rezero = TRUE, remove = TRUE)
+```
+
+#### Assess and Clean Trackloss
+
+```{r}
+# analyze amount of trackloss by subjects and trials
+(trackloss <- trackloss_analysis(data = agent_sentence_window))
+```
+
+#### Remove trials where track loss exceeds 25%
+```{r}
+#remove trials with trackloss greater than threshold (here, 25%)
+agent_sentence_window_clean <- clean_by_trackloss(data = agent_sentence_window, trial_prop_thresh = .25)
+```
+#### Re-assess track loss post-cleaning to understand average track loss and its distribution across participants.
+
+```{r}
+#re-assess trackloss following cleaning
+trackloss_clean <- trackloss_analysis(data = agent_sentence_window_clean)
+
+#prints mean trackloss by participants following cleaning of trials >threshold loss
+(trackloss_clean_subjects <- unique(trackloss_clean[, c('participant','TracklossForParticipant')]))%>%print(n = 50)
+```
+
+#### Calculate the mean percentage of samples contributed per trial, with its standard deviation.
+```{r}
+# get mean%  samples contributed per trial, with SD
+mean(1 - trackloss_clean_subjects$TracklossForParticipant)
+sd(1- trackloss_clean_subjects$TracklossForParticipant)
+
+```
+
+#### Summarize the number of valid (non-lossy) trials contributed by each subject.
+```{r}
+# See number of (non-lossy) trials contributed by subject in the NumTrials column
+(final_summary <- describe_data(agent_sentence_window_clean, 'TargetX', 'participant'))%>%print(n = 50)
+```
+
+
+```{r}
+#see mean/SD of trials remaining after cleaning
+mean(final_summary$NumTrials)
+sd(final_summary$NumTrials)
+
+```
+
+#### Make and Plot Time Sequence
+
+```{r}
+#create time sequence
+agent_time_seq <-make_time_sequence_data(agent_sentence_window_clean, time_bin_size = 50,
+                                   predictor_columns = c("task", "sound_quality"), aois = c("TargetX", "TargetY", "FOIL")
+                                   )
+agent_time_seq<- na.omit(agent_time_seq)
+
+
+#change order of levels in AOI factor in order to change plot default
+agent_time_seq$AOI <- as.character(agent_time_seq$AOI)
+agent_time_seq$AOI <- factor(agent_time_seq$AOI, levels = c("TargetX", "TargetY", "FOIL"))
+
+ggplot(agent_time_seq, aes(x = Time, y = Prop, col= AOI)) +
+#  geom_smooth() +
+#  stat_summary(fun.data = mean_se, geom = "errorbar", aes(color=paste("mean_se", AOI))) +
+  stat_summary(geom="line", size = 2) + 
+  theme_minimal() +
+  theme(legend.text=element_text(size=rel(1.2))) +
+  theme(legend.position="bottom", legend.box = "horizontal") +
+  facet_grid(task ~ .) +
+  scale_color_hp(discrete = TRUE, option = "gryffindor", name = "AOI") +
+  labs(title="Agent Window",
+        x ="Time (ms)", y = "Proportion of Looks")
+```
+
+
+```{r}
+
+# Calculate proportion of fixations for each area of interest (AOI) and participant/time bin
+
+fixation_prop_TargetX <- make_time_sequence_data(agent_sentence_window_clean,
+                                         time_bin_size = 50, 
+                                         predictor_columns = c("task","sound_quality"),
+                                         aois = 'TargetX')
+
+fixation_prop_TargetY <- make_time_sequence_data(agent_sentence_window_clean,
+                                                  time_bin_size = 50, 
+                                                  predictor_columns = c("task","sound_quality"),
+                                                  aois = 'TargetY')
+
+# Omit NA cells
+fixation_prop_TargetX<- na.omit(fixation_prop_TargetX)
+fixation_prop_TargetY<- na.omit(fixation_prop_TargetY)
+
+```
+
+#### Visualise the Data
+
+```{r }
+
+pTargetX<-plot(fixation_prop_TargetX, predictor_column = "task") + theme_light() +
+      scale_color_hp(discrete = TRUE, option = "gryffindor")+
+  scale_fill_hp(discrete = TRUE,option = "gryffindor") +
+  coord_cartesian(ylim = c(0,.3))
+
+pTargetY<-plot(fixation_prop_TargetY, predictor_column = "task") + theme_light() +
+      scale_color_hp(discrete = TRUE, option = "gryffindor")+
+  scale_fill_hp(discrete = TRUE,option = "gryffindor") +
+  coord_cartesian(ylim = c(0,.3))
+library(gridExtra)
+
+# Combine the plots
+grid.arrange(pTargetX, pTargetY, ncol = 2)
+
+```
+
+#### Calculate Target Bias
+
+For analysis, a 'proportion' score of likelihood to fixate the target versus competitor object was calculated, indicating the strength of bias towards the critical objects in each condition as a function of time. That is, a measure of 'Target Bias' was calculated (i.e., difference scores - fixations to Target divided by Competitor).
+
+```{r }
+
+# Calculate the difference score for Target divided by Competitor (i.e., Target bias)
+
+fixation_prop_Diff <- fixation_prop_TargetX
+fixation_prop_Diff$PropDiff <- fixation_prop_TargetX$Prop - fixation_prop_TargetY$Prop
+
+```
+
+
+# Linear Mixed Models and Growth Curve Analysis
+
+A series of regression models were conducted to investigate the relationship between anticipatory bias in eye-movements across the 3000ms peroid, and how this may vary with age, using linear, quadratic, or cubic terms. Where more than one model fit was significant, the best fitting model was deduced by comparing the simpler model against the more complex model using an ANOVA (i.e., linear vs. quadratic, quadratic vs. cubic). If the p-value was greater than .05, then the simpler model was selected as the best fitting model.
+
+
+Shown below are the models with maximal contrasts allowing successful convergence. 
+
+```{r}
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+```
+
+## Model 1: A base model without task
+
+```{r}
+
+# Model 1: A base model without task
+model_time_sequence.base <- lmer(PropDiff ~ sound_quality*(ot1+ot2+ot3) + (1 | item) + (1 | participant), 
+                                 control = lmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 200000)), data = fixation_prop_Diff, REML = FALSE)
+print(summary(model_time_sequence.base))
+```
+  - The positive estimate for `ot1` (0.1599) suggests that as `ot1` increases, `PropDiff` tends to increase, and this is highly significant.
+  - The negative estimate for `ot2` (-0.0736) indicates that as `ot2` increases, `PropDiff` tends to decrease, and this too is significant.
+  - Sound quality (`sound_qualityLQ`) itself doesn't significantly predict the response (`PropDiff`), nor do its interactions with `ot2` and `ot3`. However, its interaction with `ot1` is marginally significant, hinting at a potential, though not strong, modulation of the `ot1` effect by sound quality.
+
+## Model 2: Linear model, including task
+
+```{r}
+# Model 2: Linear model, including task
+model_time_sequence1.task <- lmer(PropDiff ~ sound_quality*task*ot1 + (1 | item) + (1 | participant), 
+                                 control = lmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 200000)), data = fixation_prop_Diff, REML = FALSE)
+print(summary(model_time_sequence1.task))
+```
+
+  - The variable `taskinterpreting` has a negative effect on `PropDiff` as indicated by its negative coefficient estimate.
+  - Sound quality (`sound_qualityLQ`) has a negative effect on `PropDiff` too.
+  - The positive estimate for `ot1` (0.1854) indicates a positive association with `PropDiff`.
+  - The significant interaction between `sound_qualityLQ` and `taskinterpreting` suggests that the effect of sound quality on `PropDiff` varies depending on the task being performed.
+
+
+## Model 3: Quadratic model
+
+```{r}
+# Model 3: Quadratic model
+model_time_sequence2.task <- lmer(PropDiff ~ sound_quality*task*(ot1+ot2) + (1 + sound_quality| item) + (1 + sound_quality| participant), 
+                                 control = lmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 200000)), data = fixation_prop_Diff, REML = FALSE)
+print(summary(model_time_sequence2.task))
+tab_model(model_time_sequence2.task)
+```
+**Main Effects on `PropDiff`:**
+   - **Sound Quality (LQ)**: There's a slight increase when the sound quality is low, but this isn't statistically significant.
+   - **Task Interpreting**: Being tasked with interpreting significantly decreases `PropDiff`.
+   - **OT1 & OT2**: `OT1` significantly increases `PropDiff` while `OT2` significantly decreases it.
+
+**Interactions:**
+   - The three-way interactions among `sound_qualityLQ`, `taskinterpreting`, `ot1`, and `ot2` aren't statistically significant, suggesting that their combined effects don't notably differ from their individual or two-way interaction effects.
+
+
+## Model 4: Cubic model 
+```{r}
+# Model 4: Cubic model.
+model_time_sequence3.task <- lmer(PropDiff ~ sound_quality*task*(ot1+ot2+ot3) + (1 | item) + (1 | participant), 
+                                 control = lmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 200000)), data = fixation_prop_Diff, REML = FALSE)
+print(summary(model_time_sequence3.task)) 
+
+```
+**Fixed Effects**:
+   - **Sound Quality (LQ)**: A decrease in `PropDiff` is observed when the sound quality is low, and this is statistically significant (p < 0.001).
+   - **Task Interpreting**: Being tasked with interpreting significantly decreases `PropDiff` (p < 0.001).
+   - **OT1**: `OT1` significantly increases `PropDiff` (p < 0.001).
+   - **OT2**: `OT2` significantly decreases `PropDiff` (p < 0.001).
+   - **OT3**: The effect of `OT3` on `PropDiff` isn't statistically significant.
+   - **Interaction of Sound Quality and Task Interpreting**: There's a significant interaction between low sound quality and the interpreting task, suggesting that their combined effect on `PropDiff` is different from their individual effects (p < 0.001).
+   - **Other interactions**: There are significant interactions between task interpreting and `OT2` (p < 0.05). The three-way interactions involving sound quality, task interpreting, and any of the OTs are not statistically significant.
+
+## Model comparison
+
+### Model 1 (Base) vs Model 2 (Linear)
+```{r}
+# Compare each model to examine best fit (if p>.05, retain simpler model)
+
+# Model 1 (Base) vs Model 2 (Linear)
+anova(model_time_sequence.base, model_time_sequence1.task) 
+```
+The model that includes the task (`model_time_sequence1.task`) seems to provide a better fit to the data `fixation_prop_Diff` compared to the base model (`model_time_sequence.base`), as indicated by lower AIC, BIC, and deviance values, as well as a higher log likelihood.
+
+### Model 2 (Linear) vs Model 3 (Quadratic)
+
+```{r}
+# Model 2 (Linear) vs Model 3 (Quadratic)
+anova(model_time_sequence1.task, model_time_sequence2.task)
+```
+- The `model_time_sequence2.task`, which considers the effect of both `ot1` and `ot2`, as well as adding random slopes for `sound_quality` within both `item` and `participant` levels, provides a significantly better fit to the `fixation_prop_Diff` data compared to the `model_time_sequence1.task`.
+
+### Model 3 (Quadratic) vs Model 4 (Cubic)
+
+```{r}
+# Model 3 (Quadratic) vs Model 4 (Cubic)
+anova(model_time_sequence2.task, model_time_sequence3.task) 
+
+```
+- Comparing the two models, the `model_time_sequence2.task`, which includes random slopes for `sound_quality` within both `item` and `participant` levels, provides a significantly better fit to the `fixation_prop_Diff` data than the `model_time_sequence3.task` which models the interaction of `sound_quality`, `task`, and all three `ot` variables but without the random slopes for `sound_quality`.
+
+**Conclusion**
+The quadratic model provided the best fit for the data, over the linear model, with no significant difference between the quadratic and cubic models.
+
+## Output for Julia input
+
+```{r}
+dat <- 
+  fixation_prop_Diff |> 
+  as_tibble() |> 
+  dplyr::rename(Subj = participant, Item = item, SQ = sound_quality, Task = task) |> 
+  dplyr::select(Subj, Item, SQ, Task, ot1, ot2, ot3, PropDiff)
+
+library(arrow)
+write_feather(dat, "data/Pan_VWP.arrow")
+```
+
+
+## Post-Hoc Analysis
+
+To examine the significant three-way interaction between task, sound_quality, and Linear Time, post-hoc analyses were conducted separately for Listener-Only and Shared-Perspective trials.
+
+RK: I don'think this is a good idea, because you lose statistical power when you work with only a subset of the data. IMO it is better to specify a post-hoc LMM parameterized in such a way that you get statistics for the tests of interest. We can talk about this at SMLP2023. 
+
+```{r}
+
+# Separate data by condition for post hoc analysis
+fixation_prop_Diff_comprehension <- fixation_prop_Diff[ which(fixation_prop_Diff$task =='comprehension'), ]
+
+fixation_prop_Diff_interpreting <- fixation_prop_Diff[ which(fixation_prop_Diff$task =='interpreting'), ]
+
+model_time_sequence2_comprehension.sq <- lmer(PropDiff ~ sound_quality*ot1 + (1 | item) + (1 | participant), 
+                                 control = lmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 200000)), data = fixation_prop_Diff_comprehension, REML = FALSE)
+print(summary(model_time_sequence2_comprehension.sq))
+
+model_time_sequence2_interpreting.sq <- lmer(PropDiff ~ sound_quality*ot1 + (1 | item) + (1 | participant), 
+                                      control = lmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 200000)), data = fixation_prop_Diff_interpreting, REML = FALSE)
+print(summary(model_time_sequence2_interpreting.sq))
+
+```
+
+For the `fixation_prop_Diff_comprehension` data:
+
+- The main effect of `sound_qualityLQ` was significant, with a lower fixation proportion difference for low-quality sound (Estimate: -3.094e-02, p-value: 0.003269).
+- The main effect of `ot1` was also significant, indicating an increase in the fixation proportion difference with the factor `ot1` (Estimate: 1.829e-01, p-value: 3.24e-08).
+- The interaction effect between `sound_qualityLQ` and `ot1` was not significant (p-value: 0.741502).
+
+For the `fixation_prop_Diff_interpreting` data:
+
+- The main effect of `sound_qualityLQ` was significant, showing an increase in the fixation proportion difference for low-quality sound (Estimate: 4.729e-02, p-value: 6.57e-07).
+- The main effect of `ot1` was significant, suggesting an increase in the fixation proportion difference with the factor `ot1` (Estimate: 1.312e-01, p-value: 7.36e-06).
+- The interaction effect between `sound_qualityLQ` and `ot1` was also significant, indicating that the relationship between `sound_qualityLQ` and the fixation proportion difference depends on the level of `ot1` (Estimate: -1.077e-01, p-value: 0.00885).
+
+#### Time Course Data-sound quality
+
+```{r }
+
+# Plot time course data (averaged over age) with model curve fitted
+plot(fixation_prop_Diff, predictor_column = "sound_quality", dv = "PropDiff", model = model_time_sequence2.task) + 
+  theme_bw() +
+  coord_cartesian(ylim = c(-.05,.2))+
+    scale_color_hp(discrete = TRUE, option = "gryffindor")+
+  scale_fill_hp(discrete = TRUE,option = "gryffindor") 
+
+```
+
+
+
+#### Time Course Data-task
+
+```{r }
+
+# Plot time course data (averaged over age) with model curve fitted
+plot(fixation_prop_Diff, predictor_column = "task", dv = "PropDiff", model = model_time_sequence2.task) + 
+  theme_bw() +
+  coord_cartesian(ylim = c(-.05,.2))+
+    scale_color_hp(discrete = TRUE, option = "gryffindor")+
+  scale_fill_hp(discrete = TRUE,option = "gryffindor") 
+
+```
+
+
+#### Three-way interaction
+
+To illustrate the three-way interaction between Time x task x sound_quality, here we plot these effects in three discrete age groups, separately for Listener-Only and Shared-Perspective conditions.
+
+```{r }
+# Plot for comprehension task
+plot(fixation_prop_Diff_comprehension, predictor_column = "sound_quality", dv = "PropDiff")+ theme_bw()+
+  xlab("Time in Agent Window") + ylab("Target Bias: comprehension Condition")+
+  coord_cartesian(ylim = c(0,.2))+
+  scale_color_hp(discrete = TRUE, option = "gryffindor", name = "Sound Quality")+
+  scale_fill_hp(discrete = TRUE,option = "gryffindor", name = "Sound Quality") 
+```
+
+```{r}
+# Plot for interpreting task
+plot(fixation_prop_Diff_interpreting,predictor_column = "sound_quality", dv = "PropDiff")+ theme_bw()+
+  xlab("Time in Trial") + ylab("Target Bias: interpreting Condition")+
+  coord_cartesian(ylim = c(-.05,.2))+
+  scale_color_hp(discrete = TRUE, option = "gryffindor", name = "Sound Quality")+
+  scale_fill_hp(discrete = TRUE,option = "gryffindor", name = "Sound Quality")
+
+```

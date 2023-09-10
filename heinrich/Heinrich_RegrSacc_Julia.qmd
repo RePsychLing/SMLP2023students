@@ -1,0 +1,183 @@
+---
+title: "Nils Wendel Heinrich: Regressive Saccades"
+subtitle: "RePsychLing in SMLP2023"
+author: "Reinhold Kliegl"
+date: "2023-09-08"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    code-fold: false
+    number-sections: true
+    fig-width: 8
+    fig-height: 6
+editor_options:
+  chunk_output_type: console
+jupyter: julia-1.9
+---
+
+# Description
+
+
+# Setup
+
+## Packages
+
+```{julia}
+#| label: packages
+
+using Arrow
+using CairoMakie
+using DataFrames
+using MixedModels
+using MixedModelsMakie
+using RCall
+
+CairoMakie.activate!(; type="svg");
+```
+
+## Code book
+
+
+
+```{julia}
+#| label: data
+
+dat = DataFrame(Arrow.Table("data/Heinrich_RegressiveSaccades.arrow"));
+describe(dat)
+```
+
+# Contrasts
+
+We have only the random factor `Subj` and declare it as a grouping variable.
+
+```{julia}
+contrasts = Dict(:Subj => Grouping());
+```
+
+# Model selection
+
+## Only varying intercept LMM
+
+```{julia}
+#| label: m_ovi
+
+m_ovi = let
+    form = @formula(sa ~ 1 + nvo + nvdt + IN + (1 | Subj));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+
+## Complex LMM
+
+ We start with a complex LMM; it is not _maximal_ because not all within-subject covariates are terms in RES.
+
+```{julia}
+#| label: m_cpx
+
+m_cpx = let
+    form = @formula(sa ~ 1 + nvo + nvdt + IN + (1 + IN | Subj));
+    fit(MixedModel, form, dat; contrasts);
+  end
+issingular(m_cpx)  # overparameterized
+VarCorr(m_cpx)
+```
+
+This model is overparameterized.
+
+## Zero-correlation parameter LMM
+
+```{julia}
+#| label: m_zcp
+
+m_zcp = let
+    form = @formula(sa ~ 1 + nvo + nvdt + IN + zerocorr(1 + IN | Subj));
+    fit(MixedModel, form, dat; contrasts);
+  end
+issingular(m_zcp)  # overparameterized
+VarCorr(m_zcp)
+```
+
+LMM `m_zcp` is still overparameterized. No evidence for reliable VC for `inw`.
+
+# Parsimonious LMM (1)
+
+We remove VC for `inw` with no variance from RES.
+
+```{julia}
+#| label: m_prsm1
+
+m_prm1 = let
+    form = @formula(sa ~ 1 + nvo + nvdt + inw + ins + zerocorr(1 + ins | Subj));
+    fit(MixedModel, form, dat; contrasts);
+  end
+issingular(m_prm1)  # ok
+VarCorr(m_prm1)
+```
+
+```{julia}
+let mods = [m_ovi, m_prm1, m_zcp, m_cpx];
+ DataFrame(;
+    model=[:m_ovi, :m_prm1, :m_zcp, :m_cpx],
+    pars=dof.(mods),
+    geomdof=round.(Int, (sum ∘ leverage).(mods)),
+    AIC=round.(Int, aic.(mods)),
+    AICc=round.(Int, aicc.(mods)),
+    BIC=round.(Int, bic.(mods)),
+  )
+end
+```
+
+AIC: select m_prm1
+BIC: select m_ovi
+
+# Parsimonious LMM (2)
+
+We add a CP for `GM` and `ins`.
+
+```{julia}
+#| label: m_prm2
+
+m_prm2 = let
+    form = @formula(sa ~ 1 + nvo + nvdt + inw + ins + (1 + ins | Subj));
+    fit(MixedModel, form, dat; contrasts);
+  end
+issingular(m_prm2)  # ok
+VarCorr(m_prm2)
+```
+
+```{julia}
+#| label: compare2
+MixedModels.likelihoodratiotest(m_prm1, m_prm2)
+```
+
+No improvement in goodness of fit. We stay with `m_prm1.`
+
+# Figures
+
+## Caterpillar plot
+
+```{julia}
+#| fig-cap1: Prediction intervals on subject random effects for model m_prm1
+#| label: fig-cm_prm1
+#|
+cm_prm1 = first(ranefinfo(m_prm1));
+caterpillar!(Figure(; resolution=(800, 1200)), cm_prm1; orderby=1)
+```
+
+## Shrinkage plot
+
+```{julia}
+#| code-fold: true
+#| label: fig-shrinkage
+#|
+#| fig-cap: Shrinkage plots of the subject random effects in model m_prsm2
+shrinkageplot!(Figure(; resolution=(1000, 1200)), m_prm1)
+```
+
+# Appendix
+```{julia}
+versioninfo()
+```
