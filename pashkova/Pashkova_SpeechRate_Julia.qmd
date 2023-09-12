@@ -47,13 +47,11 @@ CairoMakie.activate!(; type="svg");
 
 ## Code book
 
-+ `Subj`, `Item`: Grouping variables (random factors)
-+ `Cat`, `Resp`:  within-Subj and within-Item fixed factors 
-+ `Type`:  within-Subj and between-Item factor
++ `Spkr` : Grouping variables (random factor)
++ `Group`:  Between-subject factor
   
 ```{julia}
 #| label: data
-
 dat = DataFrame(Arrow.Table("data/Pashkova_SpeechRate.arrow"));
 describe(dat)
 levels(dat.Group)
@@ -61,19 +59,21 @@ levels(dat.Group)
 
 # Contrasts
 
-We have  the random factors `Subj` and `Item` and declare them as a grouping variables.
+We have the random factors `Spkr` and declare it as a grouping variables.
+Grouping variables are automatically detected by the program. 
+So this line is not really needed, but good to know.
 
+# Only varying intercepts
+
+`Group` is a between-subject variables. 
+
+## DummyCoding
 ```{julia}
 contrasts =  Dict(
   :Spkr => Grouping(),
   :Group => DummyCoding())
 ```
 
-Grouping variables are automatically detected by the program. So this line is not really needed, but good to know.
-
-## Only varying intercept LMM
-
-A quick way to check highest order interactions. 
 ```{julia}
 #| label: m_ovi
 
@@ -81,6 +81,45 @@ m1 = let
     form = @formula(rate ~ 1 + Group + (1 | Spkr));
     fit(MixedModel, form, dat; contrasts);
   end
+```
+
+## SeqDiffCoding
+
+```{julia}
+contrasts =  Dict(
+  :Spkr => Grouping(),
+  :Group => SeqDiffCoding())
+```
+
+```{julia}
+#| label: m_ovi
+
+m2 = let
+    form = @formula(rate ~ 1 + Group + (1 | Spkr));
+    fit(MixedModel, form, dat; contrasts);
+  end
+```
+
+## HypothesisCoding (YchycaeitCoding)
+
+```{julia}
+m3 = let levels = ["English_MS", "German_HS", "Greek_HS", "Russian_HS", "Turkish_HS"]
+  contrasts = Dict(
+    :Spkr => Grouping(),
+    :Group => HypothesisCoding(
+      [
+        -1 1 0 0 0
+        -1 0 1 0 0
+        -1 0 0 1 0
+        -1 0 0 0 1
+      ];
+      levels,
+      labels=levels[2:end],
+    )
+  )
+  form = @formula(rate ~ 1 + Group + (1 | Spkr));
+  fit(MixedModel, form, dat; contrasts)
+end
 ```
 
 # Diagnostic plots of LMM residuals
