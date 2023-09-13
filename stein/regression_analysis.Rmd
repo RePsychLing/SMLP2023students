@@ -1,0 +1,432 @@
+---
+title: "regression"
+author: "Anna"
+date: "2023-03-13"
+output: 
+  html_document:
+  toc: true
+  theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Background 
+
+## Main goal
+
+The goal of this analysis is to find a model that best predicts word duration (from the Buckeye corpus) using measures derived from a language model. 
+
+## Variables
+
+Each of the measures are split into three domains depending on what input was used to compute them (context, syllables, segments). For each of the domains there are two measures: activation and prior. Additionally, there is activation and prior measure computed over all of the domains.
+So overall there are eight measures: 
+
+                        mean        min         median      max 
+`activation_all`        0.746562    -0.003674   0.917303    1.037572
+`activation_segments`   0.029467    -0.0368293  0.0252129   0.214145 
+`activation_syllables`  0.708922    9.52e-6     0.841656    0.980334 
+`activation_context`    0.00817298  -0.11969    0.00199494  0.490617 
+`prior_all`             8.31341     0.0265684   6.02734     56.1073 
+`prior_segments`        0.117405    7.02e-5     0.0793431   0.926309 
+`prior_syllables`       5.13974     0.0125085   4.58643     28.1047  
+`prior_context`         3.05626     0.0139897   1.32328     27.0763 
+
+**speakerID** -  40 levels: s01 to s40
+**speakerAge** - 2 levels: o (old) and y (young)
+**speakerGender** - 2 levels: f (female) and m (male) 
+**interviewerGender** - 2 levels: f (female) and m (male) 
+**wordPOS** - 4 levels: JJ (adjective), NN (noun), RB (adverb), V (verb)
+**global_sr** - 5.695 - 72.669, global speech rate, syllables per utterance
+**n_segments** - 1 - 17, number of segments in the word
+**n_syllables** - 1 - 8, number of syllables in the word
+**wordDur** - 0.000 - 26.586, word duration in seconds 
+
+```{r include=FALSE}
+x <- c('tidyselect', 'Hmisc', 'dplyr', 'knitr', 'languageR', 'vtable', 'broom.mixed', 'lattice', 'car', 'lme4', 'corrplot', 'lmerTest', 'fmsb', 'nortest', 'ggcorrplot', 'ggplot2', 'redres', 'ggpubr', 'tidyverse', 'ggstatsplot', 'gridExtra', 'xtable')
+lapply(x, require, character.only = TRUE)
+```
+
+Read in the data. 
+```{r}
+df.initial <- read_csv("../data/regression_data.csv")
+str(df.initial)
+```
+
+# Data
+### Trimming & Transformation
+#### Duration
+```{r}
+# Remove duration of 0 and over 10
+df <- subset(df.initial, df.initial$wordDur != 0 & df.initial$wordDur < 10)
+
+# Log-transform and milliseconds
+df$wordDur.Ms.log10 <- log10(df$wordDur*1000)
+```
+
+After log-transforming the data is close enough to a normal distribution.
+```{r}
+# Plot of original duration
+p1 <- ggplot(df.initial, aes(x=wordDur, fill = "blue", alpha = .7)) +
+  geom_density() +
+  stat_function(fun = dnorm, args = list(mean = mean(df.initial$wordDur), sd = sd(df.initial$wordDur))) +
+  scale_x_continuous(limits = c(-0.5, 1.5)) +
+  theme(legend.position = "none") + 
+  labs(y= "", x = "word duration")
+
+# Plot of logged duration in ms 
+p2 <- ggplot(df, aes(x=wordDur.Ms.log10, fill = "blue", alpha = .7)) +
+  geom_density() +
+  stat_function(fun = dnorm, args = list(mean = mean(df$wordDur.Ms.log10), sd = sd(df$wordDur.Ms.log10))) +
+  scale_x_continuous(limits = c(1, 3.5)) + 
+  theme(legend.position = "none") + 
+  labs(y= "", x = "logged word duration in Miliseconds")
+
+# Arranging the two plots 
+grid.arrange(p1, p2, ncol=2)
+```
+
+#### Removing function words
+```{R}
+df.fil = subset(df,wordPOS %in% c("JJ","NN","RB","V"))
+df = df.fil
+```
+
+#### Z-scoring 
+```{r}
+z.fun <- function(df,variables) { 
+  for (variable in variables) {
+  df[paste0(variable,'.z')] <- NULL
+  df[paste0(variable,'.z')] <- as.numeric(scale(df[variable]))
+  }
+  return (df)
+}
+
+varbs.for.z = c(
+  'n_segments',
+  "n_syllables",
+  "activation_context",
+  "activation_syllables",
+  "activation_segments",
+  "activation_all",
+  "prior_context",
+  "prior_syllables",
+  "prior_segments",
+  "prior_all",
+  "global_sr"
+  )
+df = z.fun(df,varbs.for.z)
+```
+
+### Coding
+#### Contrast coding for Categorical Variables
+
+```{r results='hide'}
+df$speakerGender.f.sc <- invisible(as_factor((df$speakerGender)))
+contrasts(df$speakerGender.f.sc) <- c(-0.5,0.5)
+colnames(contrasts(df$speakerGender.f.sc)) <- 'm.v.f'
+contrasts(df$speakerGender.f.sc)
+
+df$interviewerGender.f.sc <- invisible(as_factor((df$interviewerGender)))
+contrasts(df$interviewerGender.f.sc) <- c(-0.5,0.5)
+colnames(contrasts(df$interviewerGender.f.sc)) <- 'm.v.f'
+contrasts(df$interviewerGender.f.sc)
+
+df$speakerAge.f.sc <- invisible(as_factor((df$speakerAge)))
+contrasts(df$speakerAge.f.sc) <- c(-0.5,0.5)
+colnames(contrasts(df$speakerAge.f.sc)) <- 'o.v.y'
+contrasts(df$speakerAge.f.sc)
+```
+
+#### POS Encoding
+
+```{r results='hide'}
+df$wordPOS.simp = as.character(df$wordPOS)
+table(df$wordPOS.simp)
+
+numPOSSimpType = length(unique(df$wordPOS.simp))
+sum_code_POSSimp_mat = contr.sum(numPOSSimpType)/2
+df$wordPOS.simp.f.sc = as.factor(as.character(df$wordPOS.simp))
+
+contrasts(df$wordPOS.simp.f.sc) <- sum_code_POSSimp_mat
+
+# Target coding
+lookup = df %>%
+    group_by(wordPOS) %>%
+  summarise(wordPOS.tc = mean(wordDur.Ms.log10))
+df = left_join(df, lookup)
+df = z.fun(df,c('wordPOS.tc'))
+```
+
+# Bottom-up Model Building
+
+Compare the model that has the Activation and Prior predictors split by domain (mAll) with the one that is not (mSplit) split.
+```{r}
+mAll <- lmer(wordDur.Ms.log10 ~ (1 + wordDur.Ms.log10|speakerID) + (1+ wordDur.Ms.log10|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z + 
+                activation_all.z + 
+                prior_all.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mSplit <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z + activation_syllables.z + activation_segments.z + 
+                prior_context.z + prior_syllables.z + prior_segments.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+anova(mAll, mSplit)
+```
+
+#### Iteration one
+```{r}
+mBase <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z 
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mActCont <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z 
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mActSyll <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_syllables.z 
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mActSeg <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_segments.z 
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mPriorCont <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                prior_context.z 
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mPriorSyll <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                prior_syllables.z 
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mPriorSeg <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                prior_segments.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+anova(mBase, mActSeg, test = "LRT") # Changes: AIC - 228, BIC - 219, LogLi + 115, Signf p < 2.2e-16 ***
+anova(mBase, mActSyll, test = "LRT") # Changes: AIC - 847, BIC - 838, LogLi + 425, Signf p < 2.2e-16 ***
+anova(mBase, mActCont, test = "LRT") # Changes: AIC - 1238, BIC - 1230, Logli + 620, Signf p < 2.2e-16 ***
+anova(mBase, mPriorSeg, test = "LRT") # Changes: AIC - 614, BIC - 605, LogLi + 308, Signf p < 2.2e-16 ***
+anova(mBase, mPriorSyll, test = "LRT") # Changes: AIC - 925, BIC - 916, LogLi + 463, Signf p < 2.2e-16 ***
+anova(mBase, mPriorCont, test = "LRT") # Changes: AIC - 772, BIC -763 , LogLi + 387, Signf p < 2.2e-16 ***
+```
+
+#### Iteration two
+```{r}
+mActCont_ActSeg <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                activation_segments.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mActCont_PriorSeg <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                prior_segments.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+ActCont_PriorCont <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                prior_context.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mActCont_ActSyll <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                activation_syllables.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mActCont_PriorSyll <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                prior_syllables.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+anova(mActCont, mActCont_ActSeg, test = "LRT") # Changes: AIC - 235, BIC - 224, LogLi + 118, Signif p < 2.2e-16 ***
+anova(mActCont, mActCont_PriorSeg, test = "LRT") # Changes: AIC - 599, BIC - 588, LogLi + 300, Signif p < 2.2e-16 ***
+anova(mActCont, ActCont_PriorCont, test = "LRT") # Changes: AIC - 726, BIC - 715, LogLi + 364, Signif p < 2.2e-16 ***
+anova(mActCont, mActCont_ActSyll, test = "LRT") # Changes: AIC - 888, BIC - 877, LogLi + 455, Signif p < 2.2e-16 ***
+anova(mActCont, mActCont_PriorSyll, test = "LRT") # Changes: AIC - 953, BIC - 943, LogLi + 478, Signif p < 2.2e-16 ***
+```
+
+### Iteration three
+
+```{r}
+mActContPriorSyll_ActSyll <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                prior_syllables.z + 
+                activation_syllables.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mActContPriorSyll_PriorCont <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                prior_syllables.z + 
+                prior_context.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mActContPriorSyll_PriorSeg <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                prior_syllables.z + 
+                prior_segments.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mActContPriorSyll_ActSeg <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                prior_syllables.z + 
+                activation_segments.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+anova(mActCont_PriorSyll, mActContPriorSyll_ActSyll, test = "LRT") # Changes: AIC 0, BIC + 10, LogLi + 1, Signif p=0.187
+anova(mActCont_PriorSyll, mActContPriorSyll_PriorCont, test = "LRT") # Changes: AIC - 12, BIC -2, LogLi + 7, Signif p= .0001988 ***
+anova(mActCont_PriorSyll, mActContPriorSyll_PriorSeg, test = "LRT") # Changes: AIC - 4, BIC + 7, LogLi + 2, Signif p=0.02212 *
+anova(mActCont_PriorSyll, mActContPriorSyll_ActSeg, test = "LRT") # Changes: AIC - 16, BIC -6, LogLi + 9, Signif p=2.788e-05 ***
+```
+
+#### Round four
+```{r}
+mActContPriorSyllActSeg_PriorCont <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                prior_syllables.z + 
+                activation_segments.z +
+                prior_context.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mActContPriorSyllActSeg_PriorSeg <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                prior_syllables.z + 
+                activation_segments.z + 
+                prior_segments.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+mActContPriorSyllActSeg_ActSyll <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                prior_syllables.z + 
+                activation_segments.z +
+                activation_syllables.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+anova(mActContPriorSyll_ActSeg, mActContPriorSyllActSeg_PriorCont, test = "LRT") # Changes: AIC - 6, BIC + 4, LogLi + 4 Signif p=0.004088 **
+anova(mActContPriorSyll_ActSeg, mActContPriorSyllActSeg_PriorSeg, test = "LRT") # Changes: AIC + 1, BIC + 11, LogLi 0, Signif p=0.2971
+anova(mActContPriorSyll_ActSeg, mActContPriorSyllActSeg_ActSyll, test = "LRT") # Changes: AIC - 4, BIC + 6, LogLi - 3, Signif p=0.01425 *
+```
+
+### Model summary
+```{r}
+mFinal <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                n_segments.z + n_syllables.z + 
+                speakerGender.f.sc + interviewerGender.f.sc + speakerAge.f.sc +
+                wordPOS.tc.z + global_sr.z +
+                activation_context.z +
+                prior_syllables.z, 
+                data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+summary(mFinal)
+```
+
+#### Check for correlation of predictors and duration
+```{r}
+actCont <- ggplot(data=df, aes(x=activation_context.z, y=wordDur.Ms.log10)) +
+  geom_smooth(method=lm, se = TRUE, color='red')
+pSyll <- ggplot(data=df, aes(x=prior_syllables.z, y=wordDur.Ms.log10)) +
+  geom_smooth(method=lm, se = TRUE, color='red')
+actSeg <- ggplot(data=df, aes(x=activation_segments.z, y=wordDur.Ms.log10)) +
+  geom_smooth(method=lm, se = TRUE, color='red')
+
+grid.arrange(actCont, pSyll, actSeg, nrow=3)
+
+ggsave(filename = 'actContCorr.png', device = 'png', path = '../figures')
+```
+
+# Model criticism
+
+## Correlations
+```{r}
+predictor_df <- subset(df, select = c("activation_segments.z", "activation_syllables.z", "activation_context.z", "prior_context.z", "prior_syllables.z", "prior_segments.z"))
+pairscor.fnc(predictor_df, hist = FALSE)
+```
+
+Comparison of pairs with rho > 0.5
+```{r}
+mPriorSeg_solo <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                prior_segments.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+mPriorSyll_solo <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                prior_syllables.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+mPriorCont_solo <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                prior_context.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+mActSeg_solo <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                activation_segments.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+mActSyll_solo <- lmer(wordDur.Ms.log10 ~ (1|speakerID) + (1|wordID) + 
+                activation_syllables.z
+              , data=df, REML = FALSE, control=lmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e9)))
+
+anova(mActSeg_solo, mActSyll_solo) 
+anova(mActSyll_solo, mPriorSyll_solo) 
+anova(mActSyll_solo, mPriorSeg_solo)
+anova(mPriorCont_solo, mPriorSyll_solo)
+anova(mPriorCont_solo, mPriorSeg_solo)
+anova(mPriorSyll_solo, mPriorSeg_solo)
+```
