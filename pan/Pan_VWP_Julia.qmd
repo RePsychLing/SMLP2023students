@@ -25,24 +25,14 @@ jupyter: julia-1.9
 
 ```{julia}
 #| label: packages
-
-using AlgebraOfGraphics
+#| code-fold: true
+#| output: false
 using Arrow
-using CairoMakie
 using DataFrames
 using MixedModels
-using MixedModelsMakie
-using RCall
-using RegressionFormulae
-using Statistics
+using ProgressMeter
 
-using AlgebraOfGraphics: density
-using AlgebraOfGraphics: boxplot
-using MixedModelsMakie: qqnorm
-using MixedModelsMakie: ridgeplot
-using MixedModelsMakie: scatter
-
-CairoMakie.activate!(; type="svg");
+ProgressMeter.ijulia_behavior(:clear)
 ```
 
 # Linear Mixed Models and Growth Curve Analysis
@@ -51,10 +41,13 @@ A series of regression models were conducted to investigate the relationship bet
 
 ```{julia}
 #| label: data
-
-dat = DataFrame(Arrow.Table("data/Pan_VWP.arrow"));
+dat = DataFrame(Arrow.Table("data/Pan_VWP.arrow"))
 describe(dat)
+```
+```{julia}
 levels(dat.SQ)
+```
+```{julia}
 levels(dat.Task)
 ```
 
@@ -63,9 +56,13 @@ levels(dat.Task)
 We have  the random factors `Subj` and `Item` and declare them as a grouping variables.
 
 ```{julia}
-contrasts =  merge(
-     Dict( i => Grouping() for i in (:Subj, :Item)),
-     Dict( j => HelmertCoding() for j in (:SQ, :Task)))
+#| output: false
+contrasts =  Dict{Symbol, Any}(
+  :Item => Grouping(),
+  :SQ => HelmertCoding(),
+  :Subj => Grouping(),
+  :Task => HelmertCoding(),
+)
 ```
 
 Grouping variables are automatically detected by the program. So this line is not really needed, but good to know.
@@ -80,11 +77,10 @@ Usually, I prefer to use a top-down strategy for model selection, especially wrt
 ## Model 1: A base model without task
 ```{julia}
 #| label: m_ovi1
-
 m_ovi1 = let
-    form = @formula(prpD ~ 1 + SQ*(ot1+ot2+ot3) + (1 | Subj) + (1 | Item));
-    fit(MixedModel, form, dat; contrasts);
-  end
+  form = @formula(PropDiff ~ 1 + SQ*(ot1+ot2+ot3) + (1 | Subj) + (1 | Item));
+  fit(MixedModel, form, dat; contrasts);
+end
 ```
 
 Not much see here. 
@@ -100,9 +96,8 @@ I insert Model 1a to maintain the option of testing the `Task` effects.
 
 ```{julia}
 #| label: m_ovi1a
-
 m_ovi1a = let
-    form = @formula(prpD ~ 1 + SQ*ot1 + (1 | Subj) + (1 | Item));
+    form = @formula(PropDiff ~ 1 + SQ*ot1 + (1 | Subj) + (1 | Item));
     fit(MixedModel, form, dat; contrasts);
   end
 ```
@@ -121,9 +116,8 @@ Definitely not.
 
 ```{julia}
 #| label: m_ovi2
-
 m_ovi2 = let
-    form = @formula(prpD ~ 1 + Task*SQ*ot1 + (1 | Subj) + (1 | Item));
+    form = @formula(PropDiff ~ 1 + Task*SQ*ot1 + (1 | Subj) + (1 | Item));
     fit(MixedModel, form, dat; contrasts);
   end
 ```
@@ -141,14 +135,13 @@ If we have strong hypotheses, which I assume we have wrt to `Task`: Yes, it is.
 
 ```{julia}
 #| label: m_ovi3
-
 m_ovi3 = let
-    form = @formula(prpD ~ 1 + Task*SQ*(ot1 + ot2) + (1 | Subj) + (1 | Item));
+    form = @formula(PropDiff ~ 1 + Task*SQ*(ot1 + ot2) + (1 | Subj) + (1 | Item));
     fit(MixedModel, form, dat; contrasts);
   end
 ```
 
-Do we evidence for a quadratic trend across ot?
+Do we have evidence for a quadratic trend across ot?
 
 ```{julia}
 #| label: compare4
@@ -161,11 +154,10 @@ No, we don't.
 
 ```{julia}
 #| label: m_ovi4
-
 m_ovi4 = let
-    form = @formula(prpD ~ 1 + Task*SQ*(ot1 + ot2 + ot3) + (1 | Subj) + (1 | Item));
-    fit(MixedModel, form, dat; contrasts);
-  end
+  form = @formula(PropDiff ~ 1 + Task*SQ*(ot1 + ot2 + ot3) + (1 | Subj) + (1 | Item));
+  fit(MixedModel, form, dat; contrasts);
+end
 ```
 
 Do we evidence for a quadratic trend across ot?
@@ -183,11 +175,10 @@ No, we don't.
 ## Model 1: A base model without task
 ```{julia}
 #| label: m_cpx1
-
 m_cpx1 = let
-    form = @formula(prpD ~ 1 + SQ*(ot1+ot2+ot3) + (1 + SQ | Subj) + (1 + SQ | Item));
-    fit(MixedModel, form, dat; contrasts);
-  end
+  form = @formula(PropDiff ~ 1 + SQ*(ot1+ot2+ot3) + (1 + SQ | Subj) + (1 + SQ | Item));
+  fit(MixedModel, form, dat; contrasts);
+end
 ```
 
 Not much see here. 
@@ -212,11 +203,10 @@ I insert Model 5a to maintain the option of testing the `Task` effects.
 
 ```{julia}
 #| label: m_cpx1a
-
 m_cpx1a = let
-    form = @formula(prpD ~ 1 + SQ*ot1 + (1 + SQ | Subj) + (1 + SQ | Item));
-    fit(MixedModel, form, dat; contrasts);
-  end
+  form = @formula(PropDiff ~ 1 + SQ*ot1 + (1 + SQ | Subj) + (1 + SQ | Item));
+  fit(MixedModel, form, dat; contrasts);
+end
 ```
 
 Do we lose goodness of fit?
@@ -233,11 +223,10 @@ Definitely not.
 
 ```{julia}
 #| label: m_cpx2
-
 m_cpx2 = let
-    form = @formula(prpD ~ 1 + Task*SQ*ot1 + (1 + SQ | Subj) + (1 + SQ | Item));
-    fit(MixedModel, form, dat; contrasts);
-  end
+  form = @formula(PropDiff ~ 1 + Task*SQ*ot1 + (1 + SQ | Subj) + (1 + SQ | Item));
+  fit(MixedModel, form, dat; contrasts);
+end
 ```
 
 Is the ensemble of  `Task` contrasts significant?
@@ -253,11 +242,10 @@ If we have very, very strong hypotheses, which I assume we have wrt to `Task`: P
 
 ```{julia}
 #| label: m_cpx3
-
 m_cpx3 = let
-    form = @formula(prpD ~ 1 + Task*SQ*(ot1 + ot2) + (1 + SQ | Subj) + (1 + SQ | Item));
-    fit(MixedModel, form, dat; contrasts);
-  end
+  form = @formula(PropDiff ~ 1 + Task*SQ*(ot1 + ot2) + (1 + SQ | Subj) + (1 + SQ | Item));
+  fit(MixedModel, form, dat; contrasts);
+end
 ```
 
 
@@ -267,7 +255,7 @@ m_cpx3 = let
 #| label: m_cpx4
 
 m_cpx4 = let
-    form = @formula(prpD ~ 1 + Task*SQ*(ot1 + ot2 + ot3) + (1 + SQ | Subj) + (1 + SQ | Item));
+    form = @formula(PropDiff ~ 1 + Task*SQ*(ot1 + ot2 + ot3) + (1 + SQ | Subj) + (1 + SQ | Item));
     fit(MixedModel, form, dat; contrasts);
   end
 ```
@@ -296,10 +284,10 @@ let mods = [m_ovi1a, m_ovi2, m_ovi3, m_ovi4];
  DataFrame(;
     model=[:m_ovi1a, :m_ovi2, :m_ovi3, :m_ovi4],
     pars=dof.(mods),
-    geomdof=round.(Int, (sum ∘ leverage).(mods)),
-    AIC=round.(Int, aic.(mods)),
-    AICc=round.(Int, aicc.(mods)),
-    BIC=round.(Int, bic.(mods)),
+    geomdof=(sum ∘ leverage).(mods),
+    AIC=aic.(mods),
+    AICc=aicc.(mods),
+    BIC=bic.(mods),
   )
 end
 ```
@@ -310,10 +298,10 @@ let mods = [m_cpx1a, m_cpx2, m_cpx3, m_cpx4];
  DataFrame(;
     model=[:m_cpx1a, :m_cpx2, :m_cpx3, :m_cpx4],
     pars=dof.(mods),
-    geomdof=round.(Int, (sum ∘ leverage).(mods)),
-    AIC=round.(Int, aic.(mods)),
-    AICc=round.(Int, aicc.(mods)),
-    BIC=round.(Int, bic.(mods)),
+    geomdof=(sum ∘ leverage).(mods),
+    AIC=aic.(mods),
+    AICc=aicc.(mods),
+    BIC=bic.(mods),
   )
 end
 ```
@@ -321,4 +309,8 @@ end
 # Appendix
 ```{julia}
 versioninfo()
+```
+
+```{julia}
+using Pkg; Pkg.status()
 ```
