@@ -32,7 +32,6 @@ using CairoMakie
 using DataFrames
 using MixedModels
 using MixedModelsMakie
-using RCall
 using RegressionFormulae
 
 CairoMakie.activate!(; type="svg");
@@ -40,17 +39,25 @@ CairoMakie.activate!(; type="svg");
 
 ## Code book
 
-+ `Subj`, `Item`: Grouping variables (random factors)
++ `Subj`, `Item`: Grouping variables (blocking factors)
 + `Cat`, `Resp`:  within-Subj and within-Item fixed factors 
 + `Type`:  within-Subj and between-Item factor
   
 ```{julia}
 #| label: data
-
 dat = DataFrame(Arrow.Table("data/Evcen_CondInf.arrow"));
 describe(dat)
+```
+
+```{julia}
 levels(dat.Type)
+```
+
+```{julia}
 levels(dat.Cat)
+```
+
+```{julia}
 levels(dat.Resp)
 ```
 
@@ -59,10 +66,11 @@ levels(dat.Resp)
 We have  the random factors `Subj` and `Item` and declare them as a grouping variables.
 
 ```{julia}
-contrasts = merge(
-     Dict(i => Grouping() for i in (:Subj, :Item)),
-     Dict(j => EffectsCoding() for j in (:Type, :Cat, :Resp))
-     )
+contrasts = Dict(:Subj => Grouping(),
+                 :Item => Grouping(),
+                 :Type => EffectsCoding(),
+                 :Cat => EffectsCoding(),
+                 :Resp => EffectsCoding())
 ```
 
 Grouping variables are automatically detected by the program. So this line is not really needed, but good to know.
@@ -76,27 +84,33 @@ A quick way to check highest order interactions.
 #| label: m_ovi1
 
 m_ovi1 = let
-    form = @formula(log(rt) ~ 1 + (Type + Cat + Resp)^1 + (1 | Subj) + (1 | Item));
-    fit(MixedModel, form, dat; contrasts);
-  end
+    form = @formula(log(rt) ~ 1 + (Type + Cat + Resp)^1 + 
+                              (1 | Subj) + 
+                              (1 | Item))
+    fit(MixedModel, form, dat; contrasts)
+end
 ```
 
 ```{julia}
 #| label: m_ovi2
 
 m_ovi2 = let
-    form = @formula(log(rt) ~ 1 + (Type + Cat + Resp)^2 + (1 | Subj) + (1 | Item));
-    fit(MixedModel, form, dat; contrasts);
-  end
+    form = @formula(log(rt) ~ 1 + (Type + Cat + Resp)^2 + 
+                             (1 | Subj) + 
+                             (1 | Item))
+    fit(MixedModel, form, dat; contrasts)
+end
 ```
 
 ```{julia}
 #| label: m_ovi3
 
 m_ovi3 = let
-    form = @formula(log(rt) ~ 1 + (Type + Cat + Resp)^3 + (1 | Subj) + (1 | Item));
-    fit(MixedModel, form, dat; contrasts);
-  end
+    form = @formula(log(rt) ~ 1 + (Type + Cat + Resp)^3 + 
+                             (1 | Subj) + 
+                             (1 | Item))
+    fit(MixedModel, form, dat; contrasts)
+end
 ```
 
 ```{julia}
@@ -115,10 +129,18 @@ Most likely don't need 3-factor interaction.
 #| label: m_cpx
 
 m_cpx = let
-    form = @formula(log(rt) ~ 1 + (Type + Cat + Resp)^2 + (1 + Type + Cat + Resp | Subj) + (1 + Cat + Resp | Item));
-    fit(MixedModel, form, dat; contrasts);
-  end
+    form = @formula(log(rt) ~ 1 + (Type + Cat + Resp)^2 + 
+                             (1 + Type + Cat + Resp | Subj) + 
+                             (1 + Cat + Resp | Item))
+    fit(MixedModel, form, dat; contrasts)
+end
+```
+
+```{julia}
 issingular(m_cpx) # not ok, overparameterized
+```
+
+```{julia}
 VarCorr(m_cpx)
 ```
 
@@ -131,16 +153,22 @@ This model is overparameterized.
 
 m_zcp = let
     form = @formula(log(rt) ~ 1 + (Type + Cat + Resp)^2 + 
-                    zerocorr(1 + Type + Cat + Resp | Subj) + zerocorr(1 + Cat + Resp | Item));
-    fit(MixedModel, form, dat; contrasts);
+                     zerocorr(1 + Type + Cat + Resp | Subj) +
+                     zerocorr(1 + Cat + Resp | Item))
+    fit(MixedModel, form, dat; contrasts)
   end
+```
+
+```{julia}
 issingular(m_zcp) # not ok, overparameterized
+```
+
+```{julia}
 VarCorr(m_zcp)
 ```
 
 LMM `m_zcp` is still overparameterized. 
 No evidence for reliable VCs for Subj-related VCs for `Type` and `Cat`.
-
 
 # Parsimonious LMM (1)
 
@@ -151,23 +179,29 @@ We remove zero VCs from RES.
 
 m_prm1 = let
     form = @formula(log(rt) ~ 1 + (Type + Cat + Resp)^2 + 
-                    zerocorr(1 + Resp | Subj) + zerocorr(1 + Cat + Resp | Item));
-    fit(MixedModel, form, dat; contrasts);
-  end
+                    zerocorr(1 + Resp | Subj) + 
+                    zerocorr(1 + Cat + Resp | Item))
+    fit(MixedModel, form, dat; contrasts)
+end
+```
+
+```{julia}
 issingular(m_prm1) #  ok
+```
+
+```{julia}
 VarCorr(m_prm1)
 ```
 
 ```{julia}
 let mods = [m_ovi2, m_prm1, m_zcp, m_cpx];
- DataFrame(;
-    model=[:m_ovi, :m_prm1, :m_zcp, :m_cpx],
-    pars=dof.(mods),
-    geomdof=round.(Int, (sum ∘ leverage).(mods)),
-    AIC=round.(Int, aic.(mods)),
-    AICc=round.(Int, aicc.(mods)),
-    BIC=round.(Int, bic.(mods)),
-  )
+    DataFrame(;
+              model=[:m_ovi, :m_prm1, :m_zcp, :m_cpx],
+              pars=dof.(mods),
+              geomdof=round.(Int, (sum ∘ leverage).(mods)),
+              AIC=round.(Int, aic.(mods)),
+              AICc=round.(Int, aicc.(mods)),
+              BIC=round.(Int, bic.(mods)))
 end
 ```
 
@@ -182,10 +216,17 @@ We add the CPs back in.
 
 m_prm2 = let
     form = @formula(log(rt) ~ 1 + (Type + Cat + Resp)^2 + 
-                             (1 + Resp | Subj) + (1 + Cat + Resp | Item));
-    fit(MixedModel, form, dat; contrasts);
-  end
+                             (1 + Resp | Subj) + 
+                             (1 + Cat + Resp | Item))
+    fit(MixedModel, form, dat; contrasts)
+end
+```
+
+```{julia}
 issingular(m_prm2) #  ok
+```
+
+```{julia}
 VarCorr(m_prm2)
 ```
 
@@ -203,18 +244,17 @@ No improvement in goodness of fit. We stay with `m_prm1.`
 ```{julia}
 #| fig-cap1: Prediction intervals on Subj random effects for model m_prm1
 #| label: fig-cm_prm1_Subj
-#|
-cm_prm1 = first(ranefinfo(m_prm1));
-caterpillar!(Figure(; resolution=(800, 1200)), cm_prm1; orderby=1)
+
+reinfo = ranefinfo(m_prm1)
+caterpillar!(Figure(; resolution=(800, 1200)), reinfo[:Subj]; orderby=1)
 ```
 
 
 ```{julia}
 #| fig-cap1: Prediction intervals on Item random effects for model m_prm1
 #| label: fig-cm_prm1_Item
-#|
-cm_prm1 = last(ranefinfo(m_prm1));
-caterpillar!(Figure(; resolution=(800, 1200)), cm_prm1; orderby=1)
+
+caterpillar!(Figure(), reinfo[:Item]; orderby=1)
 ```
 
 ## Shrinkage plot
@@ -224,7 +264,7 @@ caterpillar!(Figure(; resolution=(800, 1200)), cm_prm1; orderby=1)
 #| label: fig-shrinkage_Subj
 #|
 #| fig-cap: Shrinkage plots of the Subj random effects in model m_prsm1
-shrinkageplot!(Figure(; resolution=(1000, 1200)), m_prm1, :Subj)
+shrinkageplot(m_prm1, :Subj)
 ```
 ```{julia}
 #| code-fold: true
