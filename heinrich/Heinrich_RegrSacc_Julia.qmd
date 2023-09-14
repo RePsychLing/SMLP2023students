@@ -32,19 +32,17 @@ using CairoMakie
 using DataFrames
 using MixedModels
 using MixedModelsMakie
-using RCall
 
 CairoMakie.activate!(; type="svg");
 ```
 
 ## Code book
 
-
-
 ```{julia}
 #| label: data
 
-dat = DataFrame(Arrow.Table("data/Heinrich_RegressiveSaccades.arrow"));
+arrow_path = joinpath(@__DIR__, "data", "Heinrich_RegressiveSaccades.arrow")
+dat = DataFrame(Arrow.Table(arrow_path));
 describe(dat)
 ```
 
@@ -64,9 +62,10 @@ contrasts = Dict(:Subj => Grouping());
 #| label: m_ovi
 
 m_ovi = let
-    form = @formula(sa ~ 1 + nvo + nvdt + IN + (1 | Subj));
-    fit(MixedModel, form, dat; contrasts);
-  end
+    form = @formula(sa ~ 1 + nvo + nvdt + IN + 
+                        (1 | Subj))
+    fit(MixedModel, form, dat; contrasts)
+end
 ```
 
 
@@ -78,10 +77,17 @@ m_ovi = let
 #| label: m_cpx
 
 m_cpx = let
-    form = @formula(sa ~ 1 + nvo + nvdt + IN + (1 + IN | Subj));
-    fit(MixedModel, form, dat; contrasts);
-  end
+    form = @formula(sa ~ 1 + nvo + nvdt + IN + 
+                        (1 + IN | Subj))
+    fit(MixedModel, form, dat; contrasts)
+end
+```
+
+```{julia}
 issingular(m_cpx)  # overparameterized
+```
+
+```{julia}
 VarCorr(m_cpx)
 ```
 
@@ -93,10 +99,17 @@ This model is overparameterized.
 #| label: m_zcp
 
 m_zcp = let
-    form = @formula(sa ~ 1 + nvo + nvdt + IN + zerocorr(1 + IN | Subj));
-    fit(MixedModel, form, dat; contrasts);
-  end
+    form = @formula(sa ~ 1 + nvo + nvdt + IN + 
+                zerocorr(1 + IN | Subj))
+    fit(MixedModel, form, dat; contrasts)
+end
+```
+
+```{julia}
 issingular(m_zcp)  # overparameterized
+```
+
+```{julia}
 VarCorr(m_zcp)
 ```
 
@@ -110,23 +123,29 @@ We remove VC for `inw` with no variance from RES.
 #| label: m_prsm1
 
 m_prm1 = let
-    form = @formula(sa ~ 1 + nvo + nvdt + inw + ins + zerocorr(1 + ins | Subj));
-    fit(MixedModel, form, dat; contrasts);
-  end
+    form = @formula(sa ~ 1 + nvo + nvdt + inw + ins + 
+                zerocorr(1 + ins | Subj))
+    fit(MixedModel, form, dat; contrasts)
+end
+```
+
+```{julia}
 issingular(m_prm1)  # ok
+```
+
+```{julia}
 VarCorr(m_prm1)
 ```
 
 ```{julia}
-let mods = [m_ovi, m_prm1, m_zcp, m_cpx];
- DataFrame(;
-    model=[:m_ovi, :m_prm1, :m_zcp, :m_cpx],
-    pars=dof.(mods),
-    geomdof=round.(Int, (sum ∘ leverage).(mods)),
-    AIC=round.(Int, aic.(mods)),
-    AICc=round.(Int, aicc.(mods)),
-    BIC=round.(Int, bic.(mods)),
-  )
+let mods = [m_ovi, m_prm1, m_zcp, m_cpx]
+    DataFrame(;
+              model=[:m_ovi, :m_prm1, :m_zcp, :m_cpx],
+              pars=dof.(mods),
+              geomdof=round.(Int, (sum ∘ leverage).(mods)),
+              AIC=round.(Int, aic.(mods)),
+              AICc=round.(Int, aicc.(mods)),
+              BIC=round.(Int, bic.(mods)))
 end
 ```
 
@@ -141,10 +160,17 @@ We add a CP for `GM` and `ins`.
 #| label: m_prm2
 
 m_prm2 = let
-    form = @formula(sa ~ 1 + nvo + nvdt + inw + ins + (1 + ins | Subj));
-    fit(MixedModel, form, dat; contrasts);
-  end
+    form = @formula(sa ~ 1 + nvo + nvdt + inw + ins + 
+                        (1 + ins | Subj))
+    fit(MixedModel, form, dat; contrasts)
+end
+```
+
+```{julia}
 issingular(m_prm2)  # ok
+```
+
+```{julia}
 VarCorr(m_prm2)
 ```
 
@@ -163,8 +189,8 @@ No improvement in goodness of fit. We stay with `m_prm1.`
 #| fig-cap1: Prediction intervals on subject random effects for model m_prm1
 #| label: fig-cm_prm1
 #|
-cm_prm1 = first(ranefinfo(m_prm1));
-caterpillar!(Figure(; resolution=(800, 1200)), cm_prm1; orderby=1)
+re_info = ranefinfo(m_prm1)
+caterpillar!(Figure(; resolution=(800, 1200)), re_info[:Subj]; orderby=1)
 ```
 
 ## Shrinkage plot
@@ -174,7 +200,7 @@ caterpillar!(Figure(; resolution=(800, 1200)), cm_prm1; orderby=1)
 #| label: fig-shrinkage
 #|
 #| fig-cap: Shrinkage plots of the subject random effects in model m_prsm2
-shrinkageplot!(Figure(; resolution=(1000, 1200)), m_prm1)
+shrinkageplot(m_prm1)
 ```
 
 # Appendix
