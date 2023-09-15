@@ -142,10 +142,10 @@ let mods = [m_ovi, m_prm1, m_zcp, m_cpx]
     DataFrame(;
               model=[:m_ovi, :m_prm1, :m_zcp, :m_cpx],
               pars=dof.(mods),
-              geomdof=round.(Int, (sum ∘ leverage).(mods)),
-              AIC=round.(Int, aic.(mods)),
-              AICc=round.(Int, aicc.(mods)),
-              BIC=round.(Int, bic.(mods)))
+              geomdof=(sum ∘ leverage).(mods)),
+              AIC=aic.(mods),
+              AICc=aicc.(mods),
+              BIC=bic.(mods))
 end
 ```
 
